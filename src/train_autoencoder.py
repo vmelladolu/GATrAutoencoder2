@@ -151,7 +151,7 @@ def parse_args():
     parser.add_argument("--test", action="store_true", help="Ejecuta un forward de prueba en GPU y dibuja la red")
     parser.add_argument("--epochs", type=int, default=100, help="Número de épocas de entrenamiento")
     parser.add_argument("--batch_size", type=int, default=3, help="Tamaño de batch para entrenamiento y validación")
-    parser.add_argument("--cfg", "-c", type=str, default="model_cfg.yml", help="Archivo YAML con la configuración del modelo")
+    parser.add_argument("--cfg", "-c", type=str, default="config/model_cfg.yml", help="Archivo YAML con la configuración del modelo")
     return parser.parse_args()
 
 def main():
