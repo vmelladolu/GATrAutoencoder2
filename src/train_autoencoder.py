@@ -108,6 +108,35 @@ def _plot_event_projections(xyz, xyz_rec):
         fig.tight_layout()
         return fig
 
+
+def test_forward_on_gpu(model, cfg_enc, device):
+        if not torch.cuda.is_available():
+            raise RuntimeError("Se requiere GPU para el modo --test")
+
+        model = model.to(device)
+        model.eval()
+
+        n = 16
+        mv_v_part = torch.randn(n, 3, device=device)
+        mv_s_part = torch.zeros(n, 1, device=device)
+        scalars = torch.randn(n, cfg_enc["in_s_channels"], device=device)
+        batch_idx = torch.zeros(n, dtype=torch.long, device=device)
+
+        with torch.no_grad():
+            outputs = model(mv_v_part, mv_s_part, scalars, batch_idx)
+
+        try:
+            from torchviz import make_dot
+
+            dot = make_dot(outputs["point_rec"].sum(), params=dict(model.named_parameters()))
+            dot.format = "png"
+            dot.render("gatr_autoencoder_graph", cleanup=True)
+            print("Gráfico guardado en gatr_autoencoder_graph.png")
+        except Exception:
+            print("No se pudo dibujar la red (torchviz no disponible).")
+
+        print("Test OK: forward ejecutado en GPU")
+
 def parse_args():
     import argparse
 
@@ -119,6 +148,7 @@ def parse_args():
     parser.add_argument("--use_one_hot", action="store_true", help="Si se usa one-hot encoding para las clases de thr en lugar de un solo valor escalar")
     parser.add_argument("--use_energy", action="store_true", help="Si se incluye la energía como parte de la entrada/salida (requiere modificar el modelo y los datos)")
     parser.add_argument("--z_norm", action="store_true", help="Si se aplica normalización z-score a las coordenadas espaciales y otras características usando estadísticas precomputadas")
+    parser.add_argument("--test", action="store_true", help="Ejecuta un forward de prueba en GPU y dibuja la red")
     parser.add_argument("--epochs", type=int, default=100, help="Número de épocas de entrenamiento")
     parser.add_argument("--batch_size", type=int, default=3, help="Tamaño de batch para entrenamiento y validación")
     parser.add_argument("--cfg", "-c", type=str, default="model_cfg.yml", help="Archivo YAML con la configuración del modelo")
@@ -150,9 +180,13 @@ def main():
         print(f"Warning: Adjusting decoder out_s_channels from {cfg_dec['out_s_channels']} to match encoder in_s_channels {cfg_enc['in_s_channels']} for reconstruction.")
         cfg_dec["out_s_channels"] = cfg_enc["in_s_channels"]
 
-    model = GATrAutoencoder(cfg_enc=cfg_enc, cfg_agg=cfg_agg, cfg_dec=cfg_dec, latent_s_channels=2)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = GATrAutoencoder(cfg_enc=cfg_enc, cfg_agg=cfg_agg, cfg_dec=cfg_dec, latent_s_channels=2)
     model.to(device)
+
+    if args.test:
+        test_forward_on_gpu(model, cfg_enc, device)
+        return
 
     if wandb is not None:
         wandb.init(
