@@ -17,58 +17,8 @@ try:
 except ImportError:  # pragma: no cover
     plt = None
 import yaml
-z_norm_yaml_path = "stats_z_norm.yaml"  # Ruta al archivo YAML con las estadísticas para normalización z-score
 
-def build_batch(batch, use_scalar=False, use_energy=False, use_one_hot=False, z_norm=False):
-        """
-        Convierte un Batch de PyG a los tensores que espera el modelo.
-
-        Asume que:
-            - batch.pos = (N, 3)
-            - batch.x = (N, 6) con [i, j, k, thr1, thr2, thr3]
-            - batch.batch = (N,) índices de evento
-        """
-        if z_norm:
-            with open(z_norm_yaml_path, "r") as f:
-                stats = yaml.safe_load(f)
-        # Posiciones                
-        mv_v_part = batch.pos
-        if z_norm:
-            # Aplicar normalización z-score a las coordenadas espaciales usando las estadísticas precomputadas
-            for i, coord in enumerate(["x", "y", "z"]):
-                mean = stats[coord]["mean"]
-                std = stats[coord]["std"]
-                mv_v_part[:, i] = (mv_v_part[:, i] - mean) / std
-                
-        N = batch.x.shape[0]
-        device = batch.x.device
-        
-        # Si se va a usar la profundidad
-        if use_scalar:
-          mv_s_part = batch.k
-          if z_norm and "k" in stats:
-              mean = stats["k"]["mean"]
-              std = stats["k"]["std"]
-              mv_s_part = (mv_s_part - mean) / std  
-        else:
-          mv_s_part = torch.zeros((N, 1), dtype=torch.float32).to(device) # Placeholder para la parte escalar (profundidad)
-        
-        # Si los thresholds son (1, 2, 3) o si se quiere usar one-hot encoding [thr1, thr2, thr3]
-        if use_one_hot:
-            scalars = torch.cat([batch.thr1, batch.thr2, batch.thr3], dim=1) # one-hot de thr1, thr2, thr3
-        else:
-            scalars = batch.thr
-            if z_norm and "thr" in stats:
-                mean = stats["thr"]["mean"]
-                std = stats["thr"]["std"]
-                scalars = (scalars - mean) / std
-        batch_idx = batch.batch
-        return {
-                "mv_v_part": mv_v_part,
-                "mv_s_part": mv_s_part,
-                "scalars": scalars,
-                "batch_idx": batch_idx,
-        }
+from utils.data_utils import build_batch
 
 
 def reconstruction_loss(outputs, mv_v_part, mv_s_part, scalars, use_scalar=False):

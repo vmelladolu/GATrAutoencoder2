@@ -1,0 +1,14 @@
+*.pt
+wandb/
+*.bash_history
+logs/
+condorInteractive
+condorSubmit
+*.npz
+*.out
+.Xauthority
+*.sh
+*condorSubmit*
+*hdf5
+*.h5
+*.log
