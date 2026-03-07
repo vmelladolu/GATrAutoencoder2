@@ -1,0 +1,58 @@
+{
+  "method": "GATrRegressor",
+  "checkpoint_path": "/nfs/cms/arqolmo/SDHCAL_Energy/GATrAutoencoder/trained_cruz_data_scheduled/gatr_regressor_final.pt",
+  "relative_error": {
+    "all_mean_abs": 0.8836143612861633,
+    "by_energy": {
+      "all": {
+        "10.0": {
+          "mean_abs_rel_error": 3.728198766708374,
+          "count": 233
+        },
+        "20.0": {
+          "mean_abs_rel_error": 1.1809779405593872,
+          "count": 1327
+        },
+        "30.0": {
+          "mean_abs_rel_error": 1.2824252843856812,
+          "count": 5223
+        },
+        "40.0": {
+          "mean_abs_rel_error": 0.8307298421859741,
+          "count": 6560
+        },
+        "50.0": {
+          "mean_abs_rel_error": 0.7345743775367737,
+          "count": 4886
+        },
+        "60.0": {
+          "mean_abs_rel_error": 0.6366037130355835,
+          "count": 4986
+        },
+        "70.0": {
+          "mean_abs_rel_error": 0.9864726662635803,
+          "count": 2895
+        },
+        "80.0": {
+          "mean_abs_rel_error": 0.5700593590736389,
+          "count": 1275
+        },
+        "90.0": {
+          "mean_abs_rel_error": 1.3013169765472412,
+          "count": 2318
+        },
+        "100.0": {
+          "mean_abs_rel_error": 0.42138510942459106,
+          "count": 2515
+        },
+        "110.0": {
+          "mean_abs_rel_error": 0.5279757380485535,
+          "count": 1511
+        }
+      }
+    }
+  },
+  "n": {
+    "all": 33729
+  }
+}

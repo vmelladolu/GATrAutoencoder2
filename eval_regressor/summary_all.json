@@ -1,0 +1,78 @@
+{
+  "method": "GATrRegressor",
+  "checkpoint_path": "/nfs/cms/arqolmo/SDHCAL_Energy/GATrAutoencoder/trained_cruz_data_scheduled/gatr_regressor_final.pt",
+  "relative_error": {
+    "all_mean_abs": 40.359214782714844,
+    "by_energy": {
+      "all": {
+        "5.0": {
+          "mean_abs_rel_error": 3.5075178146362305,
+          "count": 421
+        },
+        "7.5": {
+          "mean_abs_rel_error": 5.859547138214111,
+          "count": 1942
+        },
+        "10.0": {
+          "mean_abs_rel_error": 8.046187400817871,
+          "count": 4319
+        },
+        "15.0": {
+          "mean_abs_rel_error": 12.502410888671875,
+          "count": 18869
+        },
+        "20.0": {
+          "mean_abs_rel_error": 17.128093719482422,
+          "count": 39251
+        },
+        "25.0": {
+          "mean_abs_rel_error": 21.960468292236328,
+          "count": 18359
+        },
+        "30.0": {
+          "mean_abs_rel_error": 26.953887939453125,
+          "count": 24321
+        },
+        "40.0": {
+          "mean_abs_rel_error": 36.81847381591797,
+          "count": 23808
+        },
+        "50.0": {
+          "mean_abs_rel_error": 46.718997955322266,
+          "count": 14857
+        },
+        "60.0": {
+          "mean_abs_rel_error": 56.676753997802734,
+          "count": 10465
+        },
+        "70.0": {
+          "mean_abs_rel_error": 66.62088012695312,
+          "count": 27714
+        },
+        "80.0": {
+          "mean_abs_rel_error": 76.56542205810547,
+          "count": 7807
+        },
+        "90.0": {
+          "mean_abs_rel_error": 86.53324127197266,
+          "count": 5973
+        },
+        "100.0": {
+          "mean_abs_rel_error": 96.42024993896484,
+          "count": 12710
+        },
+        "110.0": {
+          "mean_abs_rel_error": 106.50305938720703,
+          "count": 1677
+        },
+        "120.0": {
+          "mean_abs_rel_error": 116.34480285644531,
+          "count": 430
+        }
+      }
+    }
+  },
+  "n": {
+    "all": 212923
+  }
+}
