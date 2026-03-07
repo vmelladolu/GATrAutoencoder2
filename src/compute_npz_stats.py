@@ -3,7 +3,7 @@ import json
 from typing import Dict, Iterable
 
 import numpy as np
-
+import tqdm as tqdm
 
 def _update_stats(stats: Dict[str, Dict[str, float]], key: str, values: np.ndarray) -> None:
     values = np.asarray(values)
@@ -18,22 +18,17 @@ def _update_stats(stats: Dict[str, Dict[str, float]], key: str, values: np.ndarr
 
 def compute_stats(paths: Iterable[str]) -> Dict[str, Dict[str, float]]:
     stats: Dict[str, Dict[str, float]] = {}
-    for path in paths:
+    for path in tqdm.tqdm(paths):
         npz = np.load(path, allow_pickle=True)
 
         for key in ("x", "y", "z", "i", "j", "k", "thr"):
             if key not in npz:
                 raise KeyError(f"Falta la clave '{key}' en {path}")
 
-        n_events = len(npz["x"])
-        for e in range(n_events):
-            _update_stats(stats, "x", npz["x"][e])
-            _update_stats(stats, "y", npz["y"][e])
-            _update_stats(stats, "z", npz["z"][e])
-            _update_stats(stats, "i", npz["i"][e])
-            _update_stats(stats, "j", npz["j"][e])
-            _update_stats(stats, "k", npz["k"][e])
-            _update_stats(stats, "thr", npz["thr"][e])
+        # Concatenar todos los eventos de golpe en un solo array 1-D
+        for key in ("x", "y", "z", "i", "j", "k", "thr"):
+            all_values = np.concatenate(npz[key])
+            _update_stats(stats, key, all_values)
 
         if "energy" in npz:
             _update_stats(stats, "energy", npz["energy"])

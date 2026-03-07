@@ -1,0 +1,78 @@
+{
+  "method": "GATrRegressor",
+  "checkpoint_path": "/nfs/cms/arqolmo/SDHCAL_Energy/GATrAutoencoder/trained_cruz_data_scheduled/gatr_regressor_final.pt",
+  "relative_error": {
+    "all_mean_abs": 11.030967712402344,
+    "by_energy": {
+      "all": {
+        "5.0": {
+          "mean_abs_rel_error": 51.532352447509766,
+          "count": 1686
+        },
+        "7.5": {
+          "mean_abs_rel_error": 38.01433181762695,
+          "count": 7766
+        },
+        "10.0": {
+          "mean_abs_rel_error": 41.696563720703125,
+          "count": 17277
+        },
+        "15.0": {
+          "mean_abs_rel_error": 27.18112564086914,
+          "count": 75479
+        },
+        "20.0": {
+          "mean_abs_rel_error": 20.15506362915039,
+          "count": 157002
+        },
+        "25.0": {
+          "mean_abs_rel_error": 5.952690601348877,
+          "count": 73436
+        },
+        "30.0": {
+          "mean_abs_rel_error": 5.278348922729492,
+          "count": 97286
+        },
+        "40.0": {
+          "mean_abs_rel_error": 4.36453104019165,
+          "count": 95231
+        },
+        "50.0": {
+          "mean_abs_rel_error": 3.125049591064453,
+          "count": 59426
+        },
+        "60.0": {
+          "mean_abs_rel_error": 3.1107046604156494,
+          "count": 41860
+        },
+        "70.0": {
+          "mean_abs_rel_error": 4.195746421813965,
+          "count": 110858
+        },
+        "80.0": {
+          "mean_abs_rel_error": 5.160294532775879,
+          "count": 31226
+        },
+        "90.0": {
+          "mean_abs_rel_error": 6.559487819671631,
+          "count": 23894
+        },
+        "100.0": {
+          "mean_abs_rel_error": 11.536337852478027,
+          "count": 50839
+        },
+        "110.0": {
+          "mean_abs_rel_error": 0.5501179695129395,
+          "count": 6707
+        },
+        "120.0": {
+          "mean_abs_rel_error": 12.27945613861084,
+          "count": 1718
+        }
+      }
+    }
+  },
+  "n": {
+    "all": 851691
+  }
+}
