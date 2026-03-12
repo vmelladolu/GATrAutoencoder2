@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from torch_scatter import scatter_mean, scatter_max
+from torch_scatter import scatter_mean, scatter_max, scatter_sum
 from .gatr_module import GATrBasicModule
 
 
@@ -37,8 +37,6 @@ class GATrAutoencoder(nn.Module):
         )
         self.cfg_agg = cfg_agg
         self.compressor = nn.Linear(cfg_enc["out_s_channels"] + 16, latent_s_channels) # Compress concatenated latent mv and scalar to a smaller latent space
-        self.coord_projector = nn.Linear(latent_s_channels + cfg_enc["out_s_channels"] + 16, 4) # Project latent mv to the same dimension as latent scalars for aggregation
-        self.scalar_projector = nn.Linear(latent_s_channels + cfg_enc["out_s_channels"] + 16, cfg_dec["in_s_channels"]) # Project latent scalars to the same dimension as input scalars for decoding
         # Decoder: maps latent scalars (+ optional mv) -> reconstructed scalars
         self.decoder = GATrBasicModule(
             hidden_mv_channels=cfg_dec["hidden_mv_channels"],
@@ -50,7 +48,27 @@ class GATrAutoencoder(nn.Module):
             dropout=cfg_dec["dropout"],
             out_s_channels=cfg_dec["out_s_channels"],
         )
+        out_mv_channels = cfg_enc["out_mv_channels"]
+        out_s_channels = cfg_enc["out_s_channels"]
+        if cfg_agg.get("type") == "attention":
+            from .attention_pooling import AttentionPooling
+            pool_dim = out_mv_channels * 16 + out_s_channels
+            num_seeds = cfg_agg.get("num_seeds", 1)
+            self.attention_pool = AttentionPooling(
+                embed_dim=pool_dim,
+                num_heads=cfg_agg.get("num_heads", 4),
+                num_seeds=num_seeds,
+                dropout=cfg_agg.get("dropout", 0.0),
+            )
+            head_in = num_seeds * pool_dim
+        else:
+            self.attention_pool = None
+            head_in = out_mv_channels * 16 + out_s_channels
 
+        projector_in = latent_s_channels + head_in
+        self.coord_projector = nn.Linear(projector_in, 4)
+        self.scalar_projector = nn.Linear(projector_in, cfg_dec["in_s_channels"])
+            
     def encode(self, mv_v_part, mv_s_part, scalars, batch):
         mv_latent, s_latent, point_latent, scalar_latent = self.encoder(
             mv_v_part=mv_v_part,
@@ -84,28 +102,45 @@ class GATrAutoencoder(nn.Module):
         #----------------------------------------------
         #------------- AGGREGATION STEP ---------------
         #----------------------------------------------
-        if self.cfg_agg.get("type", "mean") == "mean":
-            mv_latent_agg = scatter_mean(mv_latent.squeeze(1), batch, dim=0) # (B, 16)
-            s_latent_agg = scatter_mean(s_latent, batch, dim=0) # (B, F_s)
-        elif self.cfg_agg.get("type") == "max":
-            mv_latent_agg = scatter_max(mv_latent.squeeze(1), batch, dim=0) # (B, 16)
-            s_latent_agg = scatter_max(s_latent, batch, dim=0) # (B, F_s)
-          
-        # aggregate event information by taking mean of latent representations for each event
-        aggregate_latent = torch.cat([mv_latent_agg, s_latent_agg], dim=-1) # (B, 16 + F_s)
+        agg_type = self.cfg_agg.get("type", "sum")
+
+        if agg_type == "attention":
+            # Flatten all MV channels then concatenate with scalars
+            token_features = torch.cat(
+                [mv_latent.view(mv_latent.size(0), -1), s_latent], dim=-1
+            )  # (N, out_mv_channels*16 + out_s_channels)
+            aggregate_latent = self.attention_pool(token_features, batch)  # (B, num_seeds * D)
+        else:
+            mv_flat = mv_latent.view(mv_latent.size(0), -1)  # (N, out_mv_channels*16)
+            if agg_type == "mean":
+                mv_latent_agg = scatter_mean(mv_flat, batch, dim=0)
+                s_latent_agg = scatter_mean(s_latent, batch, dim=0)
+            elif agg_type == "max":
+                mv_latent_agg = scatter_max(mv_flat, batch, dim=0)[0]
+                s_latent_agg = scatter_max(s_latent, batch, dim=0)[0]
+            elif agg_type == "sum":
+                mv_latent_agg = scatter_sum(mv_flat, batch, dim=0)
+                s_latent_agg = scatter_sum(s_latent, batch, dim=0)
+            else:
+                raise ValueError(f"Aggregation type not supported: {agg_type}")
+
+            aggregate_latent = torch.cat([mv_latent_agg, s_latent_agg], dim=-1)  # (B, out_mv_channels*16 + out_s_channels)
         # OPCIONAL
         # SE PODRÍA PONER OTRA CAPA LINEAL PARA PROYECTAR A OTRO ESPACIO
-        
-        
-        # expand mv_latent_agg and s_latent_agg to (N, 16) and (N, F_s) respectively for concatenation
-        mv_latent_agg_expanded = mv_latent_agg[batch] # (N, 16)
-        s_latent_agg_expanded = s_latent_agg[batch] # (N, F_s)
-        
         #----------------------------------------------
         #------------- DECODER INPUT PREPARATION ------
         #----------------------------------------------
         # create full latent rpr by concatenating compressed latent, aggregated scalar latent, and aggregated mv latent
-        latent_full_repr = torch.cat([latent_compressed, s_latent_agg_expanded, mv_latent_agg_expanded], dim=-1) # (B, latent_s_channels + F_s + 16)
+        if agg_type == "attention":
+            aggregate_latent_expanded = aggregate_latent[batch] # (N, num_seeds * D)
+            latent_full_repr = torch.cat([latent_compressed, aggregate_latent_expanded], dim=-1) # (N, latent_s_channels + num_seeds * D)
+        else:
+            # expand mv_latent_agg and s_latent_agg to (N, 16) and (N, F_s) respectively for concatenation
+            mv_latent_agg_expanded = mv_latent_agg[batch] # (N, 16)
+            s_latent_agg_expanded = s_latent_agg[batch] # (N, F_s)
+            latent_full_repr = torch.cat([latent_compressed, s_latent_agg_expanded, mv_latent_agg_expanded], dim=-1) # (B, latent_s_channels + F_s + 16)
+            
+        
         
         # project to 3D coordinates for decoding  
         mv_latent_agg_projected = self.coord_projector(latent_full_repr)
