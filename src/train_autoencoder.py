@@ -82,7 +82,7 @@ def test_forward_on_gpu(model, cfg_enc, device):
             dot = make_dot(outputs["point_rec"].sum(), params=dict(model.named_parameters()))
             dot.format = "png"
             dot.render("gatr_autoencoder_graph", cleanup=True)
-            print("Gráfico guardado en gatr_autoencoder_graph.png")
+            print("Gráfico guardado en gatr_autoencoder_graph.png")
         except Exception:
             print("No se pudo dibujar la red (torchviz no disponible).")
 
@@ -126,7 +126,7 @@ def main():
         test_forward_on_gpu(model, cfg_enc, device)
         return
     data_paths = args.data_paths if args.data_paths else [
-        "../data/piones_npz/Pi_30GeV_714562_715747_716264_716308.npz",
+        "../data/Datos/El_50GeV.npz_flat.npz",
     ]
     val_ratio = args.val_ratio
     mode = args.mode

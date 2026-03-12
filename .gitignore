@@ -1,3 +1,16 @@
+HEAD
+# Python cache
+__pycache__/
+*.pyc
+
+# Logs y wandb
+*.log
+wandb/
+__pycache__/
+*.pyc
+*.log
+*.npz
+*.tar.gz
 *.pt
 wandb/
 *.bash_history
@@ -17,3 +30,4 @@ condorSubmit
 wandb/
 *png
 *.ckpt
+0b9a6c8393a90993f005d4387332b6e1fee701ad
