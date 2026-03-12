@@ -9,6 +9,7 @@ import tqdm
 
 
 FEATURE_KEYS = ("x", "y", "z", "i", "j", "k", "thr")
+OPTIONAL_FEATURE_KEYS = ("time",)  # calculadas solo si existen en el archivo
 
 
 def _update_stats(stats: Dict[str, Dict[str, float]], key: str, values: np.ndarray) -> None:
@@ -65,8 +66,19 @@ def compute_stats_hdf5(paths: Iterable[str], chunk_size: int = 5_000_000) -> Dic
             else:
                 total_events += int(len(h5["energy"]))
 
-            # Estadísticas hit-level
+            # Estadísticas hit-level (obligatorias)
             for key in FEATURE_KEYS:
+                ds = h5[key]
+                n = len(ds)
+                for start in range(0, n, chunk_size):
+                    stop = min(start + chunk_size, n)
+                    values = np.asarray(ds[start:stop], dtype=np.float64)
+                    _update_stats(stats, key, values)
+
+            # Estadísticas hit-level (opcionales, solo si existen en el archivo)
+            for key in OPTIONAL_FEATURE_KEYS:
+                if key not in h5:
+                    continue
                 ds = h5[key]
                 n = len(ds)
                 for start in range(0, n, chunk_size):

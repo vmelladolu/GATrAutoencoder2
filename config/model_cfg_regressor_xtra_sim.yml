@@ -1,0 +1,89 @@
+# Parámetros más importantes:
+# ========================================================
+# Tamaño de los datos de entrada:
+# - in_s_channels: número de coordenadas escalares (en este caso, 1 para el thr, 3 si se usa one-hot encoding de thr1, thr2, thr3)
+# - hidden_s_channels y hidden_mv_channels: "neuronas" del modelo.
+# ========================================================
+# Para el decoder:
+# out_s_channels debe ser igual a in_s_channels del encoder para que el modelo pueda reconstruir la entrada original.
+# Se asegurará en el código.
+
+
+
+# filters:
+#     particle_type: 1
+#     filter_status: true
+#     density: ">=7"
+#     energy: ">=5"   # ejemplos de operadores: >=, <=, >, <
+encoder:
+    "hidden_mv_channels": 32 # Número de dimensiones internas (más grande, más "capacidad")
+    "hidden_s_channels": 512 # Número de dimensiones internas (más grande, más "capacidad")
+    "num_blocks": 6 # Número de bloques de atención (más bloques, más profundidad, pero más difícil de entrenar)
+    "in_s_channels": 1 # Número de coordenadas "escalares" -> Nth (si es uno, sería 1, y si es one-hot de 3 clases, sería 3)
+    "in_mv_channels": 2 # 1 = "single" (default), 2 = "centroid"
+    "out_mv_channels": 1 # no tocar
+    "dropout": 0.1        # pasa a GATr como dropout_prob (GradeDropout interno)
+    "post_dropout": 0.0   # dropout SOLO sobre escalares post-encoder (0 = desactivado)
+    "out_s_channels": 128 # Número de dimensiones de salida para la parte escalar
+    "mv_embedding_mode": "centroid"  # "single" (default) o "centroid" (2 canales: pos + pos-centroide)
+    # "checkpoint": ["block"]  # null (default), ["block"], o ["attention", "mlp"]
+
+aggregation:
+    "type": "attention" # "mean", "max", "sum", "attention"
+    # Para attention pooling:
+    # "num_heads": 4
+    # "num_seeds": 1
+    # "dropout": 0.0
+    # N_hits como feature global:
+    "use_nhits_features": true   # concatenar log(N_hits) al vector agregado
+    "nhits_mode": "per_threshold"       # "total" (solo N_hits) o "per_threshold" (N1, N2, N3)
+    # Arquitectura del MLP de regresión:
+    "energy_head":
+        "hidden_dims": [256, 128, 64]  # default (comportamiento actual)
+        "activation": "gelu"           # "relu" (default) o "gelu"
+        "layernorm": true
+        "dropout": 0.0
+
+# Configuración del scheduler del learning rate
+# ========================================================
+# type: "cosine" o "step"
+#   - cosine: CosineAnnealingLR (T_max se calcula automáticamente con max_epochs)
+#   - step: StepLR (decae el LR cada step_size epochs por un factor gamma)
+# Parámetros específicos:
+#   - Para cosine: lr_min (LR mínimo, default 1e-6)
+#   - Para step: decay_steps (cada cuántas epochs/steps decaer), decay_rate (factor de decaimiento)
+# ========================================================
+scheduler:
+    warmup_pct: 0.1  # Porcentaje para el warmup (0.1 = 10% de las épocas/steps totales)
+    warmup_start_factor: 0.1  # Factor de inicio para el warmup (0.1 = el LR comienza en 10% del LR inicial)
+    type: "cosine"  # "cosine" o "step"
+    # Parámetros para CosineAnnealingLR
+    lr_min: 0.000001
+    # Parámetros para StepLR
+    decay_steps: 10
+    decay_rate: 0.1
+    # Intervalo de actualización: "epoch" (default) o "step"
+    interval: "step"
+
+optimizer:
+    weight_decay: 0.0001
+    lr : 0.001
+    loss_type: "mse"     # "mse" (default), "huber", "log_cosh"
+    # huber_delta: 1.0     # solo para huber
+    ema: true           # activar EMA de pesos (default false)
+    ema_decay: 0.999     # decay factor del EMA
+
+debug:
+    debug_grad_step: 500 # Cada cuántos pasos de entrenamiento loguear los gradientes para debugging
+    debug_event_step: 500 # Cada cuántos pasos de entrenamiento loguear los eventos para debugging
+    gradients_log_step: 100 # Cada cuántos pasos loguear los gradientes (si se activa el logging de gradientes)
+
+decoder:
+  "hidden_mv_channels": 32 # Número de dimensiones internas (más grande, más "capacidad")
+  "hidden_s_channels": 256 # Número de dimensiones internas (más grande, más "capacidad")
+  "num_blocks": 6 # Número de bloques de atención (más bloques, más profundidad, pero más difícil de entrenar)
+  "in_s_channels": 128 # Tamaño de la representación latente interna.
+  "in_mv_channels": 1 # no tocar
+  "out_mv_channels": 1 # no tocar
+  "dropout": 0.
+  "out_s_channels": 1

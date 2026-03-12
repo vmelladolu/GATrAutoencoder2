@@ -161,11 +161,31 @@ def _log_regression_plots(E_true, E_reco, step=None):
     fig3.tight_layout()
 
     unique_energies = sorted(df_plot["E_true"].unique())
-    box_data = [df_plot.loc[df_plot["E_true"] == e, "E_reco"].values for e in unique_energies]
-    fig4, ax4 = plt.subplots(figsize=(max(8, len(unique_energies) * 0.8), 6))
+    is_continuous = len(unique_energies) > 30
+
+    if is_continuous:
+        n_box_bins = 20
+        box_edges = np.linspace(df_plot["E_true"].min(), df_plot["E_true"].max(), n_box_bins + 1)
+        box_centers = 0.5 * (box_edges[:-1] + box_edges[1:])
+        df_plot["_box_bin"] = np.digitize(df_plot["E_true"], box_edges).clip(1, n_box_bins)
+        box_data = []
+        box_labels = []
+        box_ref = []
+        for b in range(1, n_box_bins + 1):
+            vals = df_plot.loc[df_plot["_box_bin"] == b, "E_reco"].values
+            if len(vals) > 0:
+                box_data.append(vals)
+                box_labels.append(f"{box_centers[b-1]:.0f}")
+                box_ref.append(box_centers[b-1])
+    else:
+        box_data = [df_plot.loc[df_plot["E_true"] == e, "E_reco"].values for e in unique_energies]
+        box_labels = [f"{e:.0f}" for e in unique_energies]
+        box_ref = list(unique_energies)
+
+    fig4, ax4 = plt.subplots(figsize=(max(8, len(box_data) * 0.8), 6))
     bp = ax4.boxplot(
         box_data,
-        positions=range(len(unique_energies)),
+        positions=range(len(box_data)),
         widths=0.6,
         patch_artist=True,
         showfliers=True,
@@ -173,9 +193,9 @@ def _log_regression_plots(E_true, E_reco, step=None):
     )
     for patch in bp["boxes"]:
         patch.set_facecolor("lightblue")
-    ax4.set_xticks(range(len(unique_energies)))
-    ax4.set_xticklabels([f"{e:.0f}" for e in unique_energies], rotation=45)
-    ax4.plot(range(len(unique_energies)), unique_energies, "r--", label=r"$E_{reco}=E_{true}$")
+    ax4.set_xticks(range(len(box_data)))
+    ax4.set_xticklabels(box_labels, rotation=45)
+    ax4.plot(range(len(box_ref)), box_ref, "r--", label=r"$E_{reco}=E_{true}$")
     ax4.set_xlabel(r"$E_{true}$ [GeV]")
     ax4.set_ylabel(r"$E_{reco}$ [GeV]")
     ax4.set_title(r"Distribution of $E_{reco}$ per $E_{true}$")

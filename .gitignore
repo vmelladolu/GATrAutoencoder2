@@ -30,4 +30,4 @@ condorSubmit
 wandb/
 *png
 *.ckpt
-0b9a6c8393a90993f005d4387332b6e1fee701ad
+gatr_autoencoder_graph

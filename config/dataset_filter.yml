@@ -1,0 +1,9 @@
+filters:
+  # nb_hits_in_last_layer: "<=5"      # continuo: <=, >=, <, >
+  # first_interaction_layer: ">=10"   # continuo
+  PID_label: 0                      # categórico: igualdad exacta
+
+# energy_bins:                        # opcional: restringe a estas energías MC (GeV)
+#   - 10
+#   - 20
+#   - 50

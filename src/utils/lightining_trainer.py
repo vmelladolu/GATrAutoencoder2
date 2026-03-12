@@ -25,6 +25,7 @@ class LightningGATrRegressor(L.LightningModule):
         max_epochs,
         plot_every,
         output_path,
+        use_time=False,
         scheduler_cfg=None,
         optimizer_cfg=None,
         debug_cfg=None
@@ -35,6 +36,7 @@ class LightningGATrRegressor(L.LightningModule):
         self.class_weights = class_weights
         self.use_scalar = use_scalar
         self.use_one_hot = use_one_hot
+        self.use_time = use_time
         self.use_log = use_log
         self.z_norm = z_norm
         self.stats = stats
@@ -45,14 +47,21 @@ class LightningGATrRegressor(L.LightningModule):
         self.scheduler_cfg = scheduler_cfg if scheduler_cfg else {"type": "cosine"}
         self.optimizer_cfg = optimizer_cfg if optimizer_cfg else {}
         self.debug_cfg = debug_cfg if debug_cfg else {}
+        self.loss_type = self.optimizer_cfg.get("loss_type", "mse")
+        self.huber_delta = self.optimizer_cfg.get("huber_delta", 1.0)
+        self.use_ema = self.optimizer_cfg.get("ema", False)
+        self.ema_decay = self.optimizer_cfg.get("ema_decay", 0.999)
+        self._ema = None
+        self._ema_state_to_load = None
         self._batch_start_time = None
         self._epoch_start_time = None
         self._val_true_local = []
         self._val_pred_local = []
         self._debug_grad_step = None
 
-    def forward(self, mv_v_part, mv_s_part, scalars, batch_idx):
-        return self.model(mv_v_part, mv_s_part, scalars, batch_idx)
+    def forward(self, mv_v_part, mv_s_part, scalars, batch_idx, extra_global_features=None):
+        return self.model(mv_v_part, mv_s_part, scalars, batch_idx,
+                          extra_global_features=extra_global_features)
 
     @property
     def _is_global_zero(self):
@@ -64,17 +73,23 @@ class LightningGATrRegressor(L.LightningModule):
             batch,
             use_scalar=self.use_scalar,
             use_one_hot=self.use_one_hot,
-            use_log=self.use_log,
+            use_time=self.use_time,
+            use_log=False,   # log already applied at dataset init
             use_energy=True,
-            z_norm=self.z_norm,
-            stats=self.stats,
         )
         mv_v_part = data["mv_v_part"].to(self.device)
         mv_s_part = data["mv_s_part"].to(self.device)
         scalars = data["scalars"].to(self.device)
         batch_idx = data["batch_idx"].to(self.device)
         target = data["logenergy"].to(self.device)
-        return mv_v_part, mv_s_part, scalars, batch_idx, target
+
+        extra_global = {}
+        for key in ("n_thr1", "n_thr2", "n_thr3"):
+            val = data.get(key)
+            if val is not None:
+                extra_global[key] = val.to(self.device)
+
+        return mv_v_part, mv_s_part, scalars, batch_idx, target, extra_global
 
     def on_train_epoch_start(self):
         self._epoch_start_time = time.perf_counter()
@@ -83,9 +98,11 @@ class LightningGATrRegressor(L.LightningModule):
         self._batch_start_time = time.perf_counter()
 
     def training_step(self, batch, batch_idx):
-        mv_v_part, mv_s_part, scalars, batch_idx_t, target = self._prepare_inputs(batch)
-        outputs = self(mv_v_part, mv_s_part, scalars, batch_idx_t)
-        loss = reconstruction_loss(outputs, target, class_weights=self.class_weights)
+        mv_v_part, mv_s_part, scalars, batch_idx_t, target, extra_global = self._prepare_inputs(batch)
+        outputs = self(mv_v_part, mv_s_part, scalars, batch_idx_t,
+                       extra_global_features=extra_global or None)
+        loss = reconstruction_loss(outputs, target, class_weights=self.class_weights,
+                                    loss_type=self.loss_type, huber_delta=self.huber_delta)
         batch_size = int(getattr(batch, "num_graphs", target.shape[0]))
 
         self.log("loss/train_batch", loss, on_step=True, on_epoch=False, sync_dist=True, prog_bar=False, batch_size=batch_size)
@@ -110,20 +127,30 @@ class LightningGATrRegressor(L.LightningModule):
         if self._is_global_zero and wandb is not None and self._debug_grad_step is not None:
             _log_gradient_stats(self.model, self._debug_grad_step)
             self._debug_grad_step = None
+        if self._ema is not None:
+            self._ema.update()
 
     def on_train_epoch_end(self):
         if self._is_global_zero and wandb is not None and self._epoch_start_time is not None:
             wandb.log({"train/epoch_time_s": time.perf_counter() - self._epoch_start_time})
 
-    def validation_step(self, batch, batch_idx):
-        mv_v_part, mv_s_part, scalars, batch_idx_v, target = self._prepare_inputs(batch)
-        outputs = self(mv_v_part, mv_s_part, scalars, batch_idx_v)
-        loss = reconstruction_loss(outputs, target, class_weights=self.class_weights)
+    def _validation_step_inner(self, batch):
+        mv_v_part, mv_s_part, scalars, batch_idx_v, target, extra_global = self._prepare_inputs(batch)
+        outputs = self(mv_v_part, mv_s_part, scalars, batch_idx_v,
+                       extra_global_features=extra_global or None)
+        loss = reconstruction_loss(outputs, target, class_weights=self.class_weights,
+                                    loss_type=self.loss_type, huber_delta=self.huber_delta)
         batch_size = int(getattr(batch, "num_graphs", target.shape[0]))
         self.log("loss/val", loss, on_step=False, on_epoch=True, sync_dist=True, prog_bar=True, batch_size=batch_size)
         self._val_true_local.append(target.cpu().detach())
         self._val_pred_local.append(outputs.cpu().detach())
         return loss
+
+    def validation_step(self, batch, batch_idx):
+        if self._ema is not None:
+            with self._ema.average_parameters():
+                return self._validation_step_inner(batch)
+        return self._validation_step_inner(batch)
 
     def on_validation_epoch_end(self):
         if self.trainer.sanity_checking:
@@ -187,47 +214,84 @@ class LightningGATrRegressor(L.LightningModule):
             lr=self.learning_rate,
             weight_decay=self.optimizer_cfg.get("weight_decay", 1e-4),
         )
-        
+
         warmup_pct = self.scheduler_cfg.get("warmup_pct", 0.0)
         warmup_start_factor = self.scheduler_cfg.get("warmup_start_factor", 0.1)
-        max_epochs = self.max_epochs
-        warmup_epochs = int(max_epochs * warmup_pct)
-        
-        if self.scheduler_cfg.get("type", "cosine") == "cosine":
-            # Si hay warmup, el coseno se aplica en las épocas restantes.
-            cosine_t_max = max(1, max_epochs - warmup_epochs)
-            main_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
-                opt,
-                T_max=cosine_t_max,
-                eta_min=self.scheduler_cfg.get("lr_min", 1e-6),
-            )
+        interval = self.scheduler_cfg.get("interval", "epoch")
+        scheduler_type = self.scheduler_cfg.get("type", "cosine")
+
+        if interval == "step":
+            # Step-level scheduling: use estimated_stepping_batches from Lightning
+            total_steps = self.trainer.estimated_stepping_batches
+            warmup_steps = int(total_steps * warmup_pct)
+
+            if scheduler_type == "cosine":
+                cosine_steps = max(1, total_steps - warmup_steps)
+                main_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    opt,
+                    T_max=cosine_steps,
+                    eta_min=self.scheduler_cfg.get("lr_min", 1e-6),
+                )
+            else:
+                main_sched = torch.optim.lr_scheduler.StepLR(
+                    opt,
+                    step_size=self.scheduler_cfg.get("decay_steps", 1000),
+                    gamma=self.scheduler_cfg.get("decay_rate", 0.5),
+                )
+
+            if warmup_steps > 0:
+                warmup_sched = torch.optim.lr_scheduler.LinearLR(
+                    opt,
+                    start_factor=warmup_start_factor,
+                    end_factor=1.0,
+                    total_iters=warmup_steps,
+                )
+                sched = torch.optim.lr_scheduler.SequentialLR(
+                    opt,
+                    schedulers=[warmup_sched, main_sched],
+                    milestones=[warmup_steps],
+                )
+            else:
+                sched = main_sched
         else:
-            main_sched = torch.optim.lr_scheduler.StepLR(
-                opt,
-                step_size=self.scheduler_cfg.get("decay_steps", 30),
-                gamma=self.scheduler_cfg.get("decay_rate", 0.5),
-            )
-        
-        if warmup_epochs > 0:
-            warmup_sched = torch.optim.lr_scheduler.LinearLR(
-                opt,
-                start_factor=warmup_start_factor,
-                end_factor=1.0,
-                total_iters=warmup_epochs,
-            )
-            sched = torch.optim.lr_scheduler.SequentialLR(
-                opt,
-                schedulers=[warmup_sched, main_sched],
-                milestones=[warmup_epochs],
-            )
-        else:
-            sched = main_sched
-        
+            # Epoch-level scheduling (original behaviour)
+            max_epochs = self.max_epochs
+            warmup_epochs = int(max_epochs * warmup_pct)
+
+            if scheduler_type == "cosine":
+                cosine_t_max = max(1, max_epochs - warmup_epochs)
+                main_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    opt,
+                    T_max=cosine_t_max,
+                    eta_min=self.scheduler_cfg.get("lr_min", 1e-6),
+                )
+            else:
+                main_sched = torch.optim.lr_scheduler.StepLR(
+                    opt,
+                    step_size=self.scheduler_cfg.get("decay_steps", 30),
+                    gamma=self.scheduler_cfg.get("decay_rate", 0.5),
+                )
+
+            if warmup_epochs > 0:
+                warmup_sched = torch.optim.lr_scheduler.LinearLR(
+                    opt,
+                    start_factor=warmup_start_factor,
+                    end_factor=1.0,
+                    total_iters=warmup_epochs,
+                )
+                sched = torch.optim.lr_scheduler.SequentialLR(
+                    opt,
+                    schedulers=[warmup_sched, main_sched],
+                    milestones=[warmup_epochs],
+                )
+            else:
+                sched = main_sched
+
         return {
             "optimizer": opt,
             "lr_scheduler": {
                 "scheduler": sched,
-                "interval": "epoch",
+                "interval": interval,
             }
         }
 
@@ -270,7 +334,26 @@ class LightningGATrRegressor(L.LightningModule):
                 log_freq=self.debug_cfg.get("gradients_log_step", 500),
                 log_graph=False,
             )
+        if self.use_ema:
+            try:
+                from torch_ema import ExponentialMovingAverage
+                self._ema = ExponentialMovingAverage(self.model.parameters(), decay=self.ema_decay)
+                if self._ema_state_to_load is not None:
+                    self._ema.load_state_dict(self._ema_state_to_load)
+                    self._ema_state_to_load = None
+            except ImportError:
+                import warnings
+                warnings.warn("torch_ema not installed — EMA disabled. Install with: pip install torch_ema")
+                self._ema = None
     
+    def on_save_checkpoint(self, checkpoint):
+        if self._ema is not None:
+            checkpoint["ema_state_dict"] = self._ema.state_dict()
+
+    def on_load_checkpoint(self, checkpoint):
+        if self.use_ema and "ema_state_dict" in checkpoint:
+            self._ema_state_to_load = checkpoint["ema_state_dict"]
+
     def on_fit_end(self):
         if not self._is_global_zero:
             return

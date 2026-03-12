@@ -2,10 +2,11 @@
 import torch
 import torch.nn as nn
 import yaml
+from torch_scatter import scatter_sum
 
 
 
-def build_batch(batch, use_scalar=False, use_energy=False, use_one_hot=False, use_log=False, z_norm=False, stats=None):
+def build_batch(batch, use_scalar=False, use_energy=False, use_one_hot=False, use_log=False, z_norm=False, stats=None, use_time=False):
         """
         Convierte un Batch de PyG a los tensores que espera el modelo.
 
@@ -33,6 +34,9 @@ def build_batch(batch, use_scalar=False, use_energy=False, use_one_hot=False, us
             scalars = torch.cat([batch.thr1, batch.thr2, batch.thr3], dim=1) # one-hot de thr1, thr2, thr3
         else:
             scalars = batch.thr
+
+        if use_time and hasattr(batch, "time") and batch.time is not None:
+            scalars = torch.cat([scalars, batch.time], dim=1)
      
         if use_energy and hasattr(batch, "energy"):
             logenergy = batch.energy.view(-1, 1)
@@ -40,10 +44,24 @@ def build_batch(batch, use_scalar=False, use_energy=False, use_one_hot=False, us
             logenergy = None
             
         batch_idx = batch.batch
+
+        # Per-threshold hit counts (Cambio 4)
+        # Always compute when thr1/thr2/thr3 are available (they are pre-computed
+        # in FlatSDHCALDataset regardless of use_one_hot).
+        if hasattr(batch, 'thr1') and batch.thr1 is not None:
+            n_thr1 = scatter_sum(batch.thr1.squeeze(-1).float(), batch_idx, dim=0)
+            n_thr2 = scatter_sum(batch.thr2.squeeze(-1).float(), batch_idx, dim=0)
+            n_thr3 = scatter_sum(batch.thr3.squeeze(-1).float(), batch_idx, dim=0)
+        else:
+            n_thr1 = n_thr2 = n_thr3 = None
+
         return {
                 "mv_v_part": mv_v_part,
                 "mv_s_part": mv_s_part,
                 "scalars": scalars,
                 "logenergy": logenergy,
                 "batch_idx": batch_idx,
+                "n_thr1": n_thr1,
+                "n_thr2": n_thr2,
+                "n_thr3": n_thr3,
         }

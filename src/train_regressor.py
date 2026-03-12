@@ -29,7 +29,7 @@ try:
 except ImportError:  # pragma: no cover
     plt = None
 
-z_norm_yaml_path = "/nfs/cms/arqolmo/SDHCAL_Energy/GATrAutoencoder/stats_hdf5.yml"
+# z_norm_yaml_path = "/nfs/cms/arqolmo/SDHCAL_Energy/GATrAutoencoder/stats_hdf5.yml"
 
 def test_forward_on_gpu(model, cfg_enc, device):
     if not torch.cuda.is_available():
@@ -68,8 +68,25 @@ def parse_args():
     parser.add_argument("--mode", choices=["memory", "lazy"], default="lazy", help="Data loading mode")
     parser.add_argument("--use_scalar", action="store_true", help="Include scalar features as model input")
     parser.add_argument("--use_one_hot", action="store_true", help="Use one-hot encoding for threshold input")
+    parser.add_argument("--use_time", action="store_true", help="Include hit time as extra scalar input")
     parser.add_argument("--use_energy", action="store_true", help="Kept for CLI compatibility")
-    parser.add_argument("--z_norm", action="store_true", help="Apply z-score normalization")
+    parser.add_argument("--z_norm", action="store_true", help="[Alias] Equivalente a --norm z_norm")
+    parser.add_argument(
+        "--norm",
+        choices=["z_norm", "minmax"],
+        default=None,
+        help="Tipo de normalización para x, y, z (y k/thr/time si aplica). "
+             "z_norm: escalado estándar; minmax: escalado Min-Max.",
+    )
+    parser.add_argument(
+        "--norm_yaml",
+        type=str,
+        default=None,
+        help="Ruta al YAML de stats de normalización. "
+             "Si no se proporciona o el archivo no existe, se calcula automáticamente "
+             "y se guarda en la carpeta del dataset.",
+    )
+    parser.add_argument("--no_weighted_loss", action="store_true", help="Desactivar el uso de weighted loss basado en la distribución de energía")
     parser.add_argument("--test", action="store_true", help="Run a forward pass test on GPU and exit")
     parser.add_argument("--epochs", type=int, default=1, help="Training epochs")
     parser.add_argument("--batch_size", type=int, default=3, help="Per-device batch size")
@@ -144,6 +161,16 @@ def main():
     cfg_dec = cfg_models["decoder"]
     cfg_agg = cfg_models["aggregation"]
 
+    # Calcular in_s_channels dinámicamente según los flags activos
+    n_thr_channels = 3 if args.use_one_hot else 1
+    in_s_channels = n_thr_channels + (1 if args.use_time else 0)
+    if cfg_enc["in_s_channels"] != in_s_channels:
+        wprint(
+            f"Ajustando encoder in_s_channels: {cfg_enc['in_s_channels']} → {in_s_channels} "
+            f"(use_one_hot={args.use_one_hot}, use_time={args.use_time})"
+        )
+        cfg_enc["in_s_channels"] = in_s_channels
+
     if cfg_dec["out_s_channels"] != cfg_enc["in_s_channels"]:
         wprint(
             "Warning: Adjusting decoder out_s_channels from "
@@ -168,13 +195,20 @@ def main():
     data_paths = args.data_paths if args.data_paths else [
         "/nfs/cms/arqolmo/SDHCAL_Energy/GATrAutoencoder/flat_all.npz",
     ]
+    # --norm tiene prioridad; --z_norm es alias retrocompatible
+    norm_type = args.norm or ("z_norm" if args.z_norm else None)
     preprocessing_cfg = {
-        "use_scalar": args.use_scalar,
-        "use_one_hot": args.use_one_hot,
-        "use_energy": True,
-        "use_log": args.use_log,
-        "z_norm": args.z_norm,
-        "z_norm_yaml_path": z_norm_yaml_path,
+        "use_scalar":    args.use_scalar,
+        "use_one_hot":   args.use_one_hot,
+        "use_time":      args.use_time,
+        "use_energy":    True,
+        "use_log":       args.use_log,
+        # Normalización unificada
+        "norm_type":     norm_type,
+        "norm_yaml_path": args.norm_yaml,   # None → se auto-deriva del path del dataset
+        # Retrocompatibilidad (usado si norm_type es None y z_norm era True)
+        "z_norm":           args.z_norm,
+        # "z_norm_yaml_path": z_norm_yaml_path,
     }
     filters_cfg = cfg_models.get("filters", {})
     wprint(f"Cargando datos desde: {data_paths} con val_ratio={args.val_ratio} y mode={args.mode}")
@@ -189,16 +223,10 @@ def main():
         train_num_workers=args.train_num_workers,
         val_num_workers=args.val_num_workers,
         seed=args.seed,
+        use_weighted_loss=not args.no_weighted_loss,
     )
     datamodule.setup()
     class_weights = datamodule.class_weights
-
-    if args.z_norm:
-        with open(z_norm_yaml_path, "r") as f:
-            wprint(f"Loading z-score normalization stats from {z_norm_yaml_path}")
-            stats = yaml.safe_load(f)
-    else:
-        stats = None
 
     plot_every = args.plot_every if args.plot_every > 0 else max(1, args.epochs // 10)
     scheduler_cfg = cfg_models.get("scheduler", {"type": "cosine"})
@@ -210,9 +238,10 @@ def main():
         class_weights=class_weights,
         use_scalar=args.use_scalar,
         use_one_hot=args.use_one_hot,
+        use_time=args.use_time,
         use_log=args.use_log,
         z_norm=args.z_norm,
-        stats=stats,
+        stats=None,  # preprocessing applied at dataset init, not per-sample
         learning_rate=optimizer_cfg.get("lr", args.lr),
         max_epochs=args.epochs,
         plot_every=plot_every,

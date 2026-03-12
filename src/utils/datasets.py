@@ -33,6 +33,7 @@ class SDHCALRegressorDataModule(L.LightningDataModule):
         train_num_workers,
         val_num_workers,
         seed=42,
+        use_weighted_loss=False,
     ):
         super().__init__()
         self.data_paths = data_paths
@@ -47,6 +48,7 @@ class SDHCALRegressorDataModule(L.LightningDataModule):
         self.train_dataset = None
         self.val_dataset = None
         self.class_weights = None
+        self.use_weighted_loss = use_weighted_loss
 
     def setup(self, stage=None):
         if self.train_dataset is not None and self.val_dataset is not None:
@@ -58,6 +60,7 @@ class SDHCALRegressorDataModule(L.LightningDataModule):
             seed=self.seed,
             preprocessing_cfg=self.preprocessing_cfg,
             filters=self.filters_cfg,
+            use_weighted_loss=self.use_weighted_loss,
         )
         base_dataset = self.train_dataset.dataset if hasattr(self.train_dataset, "dataset") else self.train_dataset
         self.class_weights = getattr(base_dataset, "weights", None)
@@ -82,6 +85,7 @@ class SDHCALRegressorDataModule(L.LightningDataModule):
             pin_memory=torch.cuda.is_available(),
         )
 
+
 def _parse_filter_operator(value: str) -> tuple[str, float]:
     if value.startswith((">=", "<=")):
         op = value[:2]
@@ -94,35 +98,24 @@ def _parse_filter_operator(value: str) -> tuple[str, float]:
     return op, num
 
 
-def _resolve_event_array(raw: np.lib.npyio.NpzFile, key: str) -> Optional[np.ndarray]:
-    # Usar raw.files para verificar existencia sin cargar el array
-    files = raw.files if hasattr(raw, "files") else list(raw.keys())
-
-    if key in files:
-        return raw[key]
-    prefixed = f"filter_{key}"
-    if prefixed in files:
-        return raw[prefixed]
-    if key == "status" and "filter_status" in files:
-        return raw["filter_status"]
-    return None
-
-
-def _apply_filters_flat_npz(raw: np.lib.npyio.NpzFile, filters: dict) -> np.ndarray:
+def _apply_filters_inmem(event_data: dict, n_events: int, filters: dict) -> np.ndarray:
+    """Apply filters using pre-loaded in-memory event-level arrays."""
     if not filters:
-        n_events = len(raw["offsets"]) - 1
         return np.ones(n_events, dtype=bool)
 
-    n_events = len(raw["offsets"]) - 1
     mask = np.ones(n_events, dtype=bool)
-
     for filter_key, filter_value in filters.items():
-        arr = _resolve_event_array(raw, filter_key)
+        arr = event_data.get(filter_key)
         if arr is None:
-            raise KeyError(f"Filter key '{filter_key}' not found in NPZ")
+            arr = event_data.get(f"filter_{filter_key}")
+        if arr is None and filter_key == "status":
+            arr = event_data.get("filter_status")
+        if arr is None:
+            raise KeyError(f"Filter key '{filter_key}' not found in dataset")
+        arr = np.asarray(arr)
         if len(arr) != n_events:
             raise ValueError(
-                f"Filter key '{filter_key}' has length {len(arr)} but expected {n_events} events"
+                f"Filter key '{filter_key}' has length {len(arr)} but expected {n_events}"
             )
 
         if isinstance(filter_value, str) and filter_value.startswith((">=", "<=", ">", "<")):
@@ -136,235 +129,392 @@ def _apply_filters_flat_npz(raw: np.lib.npyio.NpzFile, filters: dict) -> np.ndar
             elif op == "<":
                 mask &= arr < num
         else:
-            # Convertir valores string a int para columnas con mapeo conocido
             compare_value = filter_value
             if filter_key in STRING_TO_INT_MAPPINGS and isinstance(filter_value, str):
                 mapping = STRING_TO_INT_MAPPINGS[filter_key]
-                if filter_value in mapping:
-                    compare_value = mapping[filter_value]
+                compare_value = mapping.get(filter_value, filter_value)
             mask &= arr == compare_value
 
     return mask
 
 
+# ============================================================
+# Helpers de normalización / stats
+# ============================================================
+
+def _derive_stats_path(dataset_path: str) -> str:
+    """Deriva la ruta del YAML de stats a partir del path del dataset.
+    Ejemplo: /data/dataset.h5 → /data/dataset_stats.yml
+    """
+    from pathlib import Path
+    p = Path(dataset_path)
+    return str(p.parent / f"{p.stem}_stats.yml")
+
+
+def _compute_stats_from_dataset_subset(
+    dataset: "FlatSDHCALDataset",
+    event_idx: np.ndarray,
+) -> dict:
+    """
+    Calcula mean/std/min/max para los features hit-level usando SOLO los
+    eventos indicados por ``event_idx`` (índices locales en el dataset,
+    i.e. índices en ``dataset._event_indices``).
+
+    Todos los arrays ya están cargados en RAM en ``dataset``.
+    La asignación hit→evento se vectoriza con np.repeat sobre los offsets.
+    """
+    ev_global = dataset._event_indices[event_idx]  # global event indices in offsets
+
+    # Build hit→event mapping (vectorized)
+    offsets = dataset._offsets
+    sizes = offsets[1:] - offsets[:-1]                           # (n_events_total,)
+    hit_events = np.repeat(                                       # (n_hits_total,)
+        np.arange(len(offsets) - 1, dtype=np.int32), sizes
+    )
+    ev_in_train = np.zeros(len(offsets) - 1, dtype=bool)
+    ev_in_train[ev_global] = True
+    hit_mask = ev_in_train[hit_events]                           # (n_hits_total,) bool
+    hit_mask_t = torch.from_numpy(hit_mask)
+
+    def _arr_stats(tensor: torch.Tensor) -> dict:
+        arr = tensor[hit_mask_t].numpy().astype(np.float64)
+        mean = float(arr.mean())
+        std = float(arr.std())
+        return {
+            "mean": mean,
+            "std": max(std, 1e-8),
+            "min": float(arr.min()),
+            "max": float(arr.max()),
+            "count": int(arr.size),
+        }
+
+    stats: dict = {
+        "x":   _arr_stats(dataset._x),
+        "y":   _arr_stats(dataset._y),
+        "z":   _arr_stats(dataset._z),
+        "i":   _arr_stats(dataset._i),
+        "j":   _arr_stats(dataset._j),
+        "k":   _arr_stats(dataset._k),
+        "thr": _arr_stats(dataset._thr),
+    }
+
+    if dataset._time is not None:
+        stats["time"] = _arr_stats(dataset._time)
+
+    if dataset._energy is not None:
+        en_arr = dataset._energy[ev_global].numpy().astype(np.float64)
+        stats["energy"] = {
+            "mean":  float(en_arr.mean()),
+            "std":   max(float(en_arr.std()), 1e-8),
+            "min":   float(en_arr.min()),
+            "max":   float(en_arr.max()),
+            "count": int(en_arr.size),
+        }
+
+    return stats
+
+
+def _load_or_compute_stats(
+    dataset: "FlatSDHCALDataset",
+    train_idx: np.ndarray,
+    preprocessing_cfg: dict,
+    norm_type: str,
+) -> dict:
+    """
+    Carga stats desde YAML si existe; si no, las calcula desde los índices
+    de entrenamiento y las guarda en YAML.
+    """
+    import yaml as _yaml
+
+    yaml_path = (
+        preprocessing_cfg.get("norm_yaml_path")
+        or preprocessing_cfg.get("z_norm_yaml_path")
+    )
+    if not yaml_path:
+        yaml_path = _derive_stats_path(dataset._path)
+
+    if os.path.exists(yaml_path):
+        with open(yaml_path, "r") as f:
+            raw_s = _yaml.safe_load(f)
+        stats = raw_s.get("stats", raw_s) if isinstance(raw_s, dict) else raw_s
+        print(f"[Stats] Cargadas desde '{yaml_path}'")
+        return stats
+
+    print(
+        f"[Stats] '{yaml_path}' no encontrado. "
+        f"Calculando desde split de entrenamiento ({len(train_idx)} eventos)..."
+    )
+    stats = _compute_stats_from_dataset_subset(dataset, train_idx)
+    os.makedirs(os.path.dirname(os.path.abspath(yaml_path)), exist_ok=True)
+    with open(yaml_path, "w") as f:
+        _yaml.dump({"norm_type": norm_type, "stats": stats}, f, default_flow_style=False)
+    print(f"[Stats] Guardadas en '{yaml_path}'")
+    return stats
+
+
 class FlatSDHCALDataset(Dataset):
     """
-    Dataset que lee:
-      - NPZ plano (carga completa en RAM)
-      - HDF5 plano (lectura por evento, sin duplicar memoria)
+    Dataset para formato plano HDF5 / NPZ.
 
-    El preprocesamiento se aplica por evento.
+    Todos los arrays (hit-level y event-level) se cargan en RAM durante
+    ``__init__``.  El preprocesamiento (normalización + log-energy) se
+    aplica UNA SOLA VEZ mediante ``_apply_preprocessing_inplace()``, que
+    es invocado por ``make_pf_splits()`` con stats calculadas
+    EXCLUSIVAMENTE sobre el split de entrenamiento.
+
+    Normalización soportada (clave 'norm_type' en preprocessing_cfg):
+      - 'z_norm'  : Escalado estándar  (x - mean) / std
+      - 'minmax'  : Escalado Min-Max   (x - min)  / (max - min)
     """
+
+    # Claves que corresponden a arrays hit-level (no event-level)
+    _HIT_KEYS = frozenset({"x", "y", "z", "i", "j", "k", "thr", "time", "offsets"})
 
     def __init__(
         self,
         path: str,
         preprocessing_cfg: Optional[dict] = None,
         filters: Optional[dict] = None,
+        use_weighted_loss: bool = False,
     ):
         super().__init__()
 
         self._path = path
-        self._preprocessing_cfg = preprocessing_cfg
+        self._preprocessing_cfg = preprocessing_cfg  # stored for reference only
         self._stats = None
 
         ext = os.path.splitext(path)[1].lower()
+        is_hdf5 = ext in [".h5", ".hdf5"]
 
-        if ext in [".h5", ".hdf5"]:
-            import h5py
-            self._raw = h5py.File(path, "r")
-            self._is_hdf5 = True
+        # ----------------------------------------------------------
+        # Abrir archivo y cargar TODOS los arrays en RAM
+        # ----------------------------------------------------------
+        if is_hdf5:
+            f = h5py.File(path, "r")
+            available = list(f.keys())
         else:
-            self._raw = np.load(path, allow_pickle=bool(filters))
-            self._is_hdf5 = False
+            f = np.load(path, allow_pickle=bool(filters))
+            available = list(f.files) if hasattr(f, "files") else list(f.keys())
 
-        self._offsets = np.asarray(self._raw["offsets"]).astype(np.int64)
-        self._n_events = len(self._offsets) - 1
-        self._event_indices = np.arange(self._n_events, dtype=np.int64)
+        self._offsets = np.asarray(f["offsets"]).astype(np.int64)
+        n_events_total = len(self._offsets) - 1
 
-        # =========================
-        # Cargar stats si hay norm
-        # =========================
-        if self._preprocessing_cfg and self._preprocessing_cfg.get("z_norm", False):
-            import yaml
-            with open(self._preprocessing_cfg["z_norm_yaml_path"], "r") as f:
-                self._stats = yaml.safe_load(f)
-                if "stats" in self._stats.keys():
-                    self.n_events_per_energy = self._stats["events"]["counts_by_energy"]
-                    self._stats = self._stats["stats"]
-                else:
-                    self.n_events_per_energy = None
-        else:
-            self.n_events_per_energy = None
-        
-        if self.n_events_per_energy is not None:
-            # Gen weights dicht
-            total = sum(self.n_events_per_energy.values())
-            self.weights = {k: total/v for k, v in self.n_events_per_energy.items()}
-        else:
-            self.weights = None
+        def _to_tensor(key: str, required: bool = True) -> Optional[torch.Tensor]:
+            if key in available:
+                return torch.from_numpy(np.asarray(f[key]).astype(np.float32))
+            if required:
+                raise KeyError(f"Falta la clave '{key}' en {path}")
+            return None
 
-        # =========================
-        # Cargar en RAM SOLO si NPZ
-        # =========================
-        if not self._is_hdf5:
-            self._x = torch.from_numpy(np.asarray(self._raw["x"]).astype(np.float32))
-            self._y = torch.from_numpy(np.asarray(self._raw["y"]).astype(np.float32))
-            self._z = torch.from_numpy(np.asarray(self._raw["z"]).astype(np.float32))
-            self._i = torch.from_numpy(np.asarray(self._raw["i"]).astype(np.float32))
-            self._j = torch.from_numpy(np.asarray(self._raw["j"]).astype(np.float32))
-            self._k = torch.from_numpy(np.asarray(self._raw["k"]).astype(np.float32))
-            self._thr = torch.from_numpy(np.asarray(self._raw["thr"]).astype(np.float32))
+        # Hit-level arrays
+        self._x   = _to_tensor("x")
+        self._y   = _to_tensor("y")
+        self._z   = _to_tensor("z")
+        self._i   = _to_tensor("i")
+        self._j   = _to_tensor("j")
+        self._k   = _to_tensor("k")
+        self._thr = _to_tensor("thr")
+        self._time = _to_tensor("time", required=False)
 
-            if "energy" in self._raw:
-                self._energy = torch.from_numpy(
-                    np.asarray(self._raw["energy"]).astype(np.float32)
-                )
-            else:
-                self._energy = None
-        else:
-            # HDF5 → no cargar arrays completos
-            self._x = self._y = self._z = None
-            self._i = self._j = self._k = None
-            self._thr = None
-            self._energy = None
+        # Pre-compute one-hot threshold masks BEFORE any normalization of thr
+        self._thr1 = (self._thr == 1).float()
+        self._thr2 = (self._thr == 2).float()
+        self._thr3 = (self._thr == 3).float()
 
-        # =========================
+        # Event-level arrays
+        self._energy = _to_tensor("energy", required=False)
+
+        # Cargar arrays event-level adicionales (necesarios para filtros)
+        event_data: dict = {}
+        for key in available:
+            if key not in self._HIT_KEYS:
+                try:
+                    arr = np.asarray(f[key])
+                    event_data[key] = arr
+                except Exception:
+                    pass
+
+        # Cerrar archivo (ya no se necesita)
+        if is_hdf5:
+            f.close()
+
+        # ----------------------------------------------------------
         # Aplicar filtros
-        # =========================
+        # ----------------------------------------------------------
+        self._event_indices = np.arange(n_events_total, dtype=np.int64)
+        self._n_events = n_events_total
+
         if filters:
-            mask = _apply_filters_flat_npz(self._raw, filters)
+            mask = _apply_filters_inmem(event_data, n_events_total, filters)
             n_passed = int(mask.sum())
             print(
                 f"[FlatSDHCALDataset] Filtros aplicados: "
-                f"{n_passed}/{self._n_events} eventos pasan "
-                f"({100*n_passed/max(1,self._n_events):.1f}%)"
+                f"{n_passed}/{n_events_total} eventos pasan "
+                f"({100 * n_passed / max(1, n_events_total):.1f}%)"
             )
-
             self._event_indices = np.flatnonzero(mask).astype(np.int64)
             self._n_events = int(self._event_indices.size)
 
-    # ==========================================================
-    # PREPROCESAMIENTO POR EVENTO
-    # ==========================================================
+        # ----------------------------------------------------------
+        # Class weights desde la distribución de energía
+        # (computed from all filtered events, before any log transform)
+        # ----------------------------------------------------------
+        if self._energy is not None and use_weighted_loss:
+            en_np = self._energy[self._event_indices].numpy()
+            unique_vals, counts = np.unique(en_np, return_counts=True)
+            n_unique = len(unique_vals)
+            n_total = len(en_np)
 
-    def _apply_preprocessing(self, x, y, z, k, thr, energy):
-        if not self._preprocessing_cfg:
-            return x, y, z, k, thr, energy
+            # Auto-detect: discrete (test beam) vs continuous (simulation)
+            is_discrete = n_unique <= max(30, int(0.001 * n_total))
 
-        # Normalización espacial
-        if self._stats is not None:
-            x = (x - self._stats["x"]["mean"]) / self._stats["x"]["std"]
-            y = (y - self._stats["y"]["mean"]) / self._stats["y"]["std"]
-            z = (z - self._stats["z"]["mean"]) / self._stats["z"]["std"]
+            if is_discrete:
+                # Discrete: one weight per unique energy value
+                self.n_events_per_energy = {
+                    f"{float(v):g}": int(c) for v, c in zip(unique_vals, counts)
+                }
+                total = int(counts.sum())
+                self.weights = {k: total / v for k, v in self.n_events_per_energy.items()}
+                self.weights["__meta__"] = {"bin_half_width": 0.5, "type": "discrete"}
+                print(
+                    f"[Weights] Energía discreta detectada: "
+                    f"{n_unique} valores únicos, pesos por valor."
+                )
+            else:
+                # Continuous: histogram with fixed-width bins
+                bin_width = 5.0  # GeV
+                e_min, e_max = float(en_np.min()), float(en_np.max())
+                bin_edges = np.arange(e_min, e_max + bin_width, bin_width)
+                hist_counts, _ = np.histogram(en_np, bins=bin_edges)
+                bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+                total = int(hist_counts.sum())
 
-            if self._preprocessing_cfg.get("use_scalar", False):
-                k = (k - self._stats["k"]["mean"]) / self._stats["k"]["std"]
+                self.n_events_per_energy = {}
+                self.weights = {}
+                for center, count in zip(bin_centers, hist_counts):
+                    if count > 0:
+                        key = f"{float(center):g}"
+                        self.n_events_per_energy[key] = int(count)
+                        self.weights[key] = total / int(count)
+                self.weights["__meta__"] = {
+                    "bin_half_width": bin_width / 2.0,
+                    "type": "continuous",
+                    "bin_width": bin_width,
+                }
+                n_bins = sum(1 for c in hist_counts if c > 0)
+                print(
+                    f"[Weights] Energía continua detectada: "
+                    f"{n_unique} valores únicos → {n_bins} bines de {bin_width} GeV."
+                )
+        else:
+            self.n_events_per_energy = None
+            self.weights = None
 
-            if not self._preprocessing_cfg.get("use_one_hot", False):
-                thr = (thr - self._stats["thr"]["mean"]) / self._stats["thr"]["std"]
+    # ----------------------------------------------------------
+    # Preprocessing (called ONCE by make_pf_splits after split)
+    # ----------------------------------------------------------
 
-        # Energía
+    def _apply_preprocessing_inplace(
+        self,
+        stats: dict,
+        norm_type: Optional[str],
+        preprocessing_cfg: dict,
+    ) -> None:
+        """
+        Aplica normalización y/o transformación logarítmica UNA SOLA VEZ
+        sobre todos los arrays hit-level y event-level en RAM.
+
+        Debe llamarse DESPUÉS de calcular las stats SOLO desde el split
+        de entrenamiento (ver ``make_pf_splits``).
+        """
+
+        if norm_type in ("z_norm", "minmax") and stats:
+            def _norm(tensor: torch.Tensor, key: str) -> torch.Tensor:
+                s = stats.get(key)
+                if s is None:
+                    return tensor
+                if norm_type == "z_norm":
+                    return (tensor - s["mean"]) / s["std"]
+                else:  # minmax
+                    rng = s["max"] - s["min"]
+                    return (tensor - s["min"]) / (rng if rng > 1e-8 else 1.0)
+
+            self._x = _norm(self._x, "x")
+            self._y = _norm(self._y, "y")
+            self._z = _norm(self._z, "z")
+
+            if preprocessing_cfg.get("use_scalar", False):
+                self._k = _norm(self._k, "k")
+
+            if not preprocessing_cfg.get("use_one_hot", False):
+                self._thr = _norm(self._thr, "thr")
+
+            if (
+                preprocessing_cfg.get("use_time", False)
+                and self._time is not None
+                and "time" in stats
+            ):
+                self._time = _norm(self._time, "time")
+
+        # Transformación logarítmica de energía (independiente de norm_type)
         if (
-            self._preprocessing_cfg.get("use_energy", False)
-            and energy is not None
-            and self._preprocessing_cfg.get("use_log", False)
+            preprocessing_cfg.get("use_energy", False)
+            and preprocessing_cfg.get("use_log", False)
+            and self._energy is not None
         ):
-            energy = torch.log(energy + 1e-6)
+            self._energy = torch.log(self._energy + 1e-6)
 
-        return x, y, z, k, thr, energy
+        self._stats = stats
+        self._preprocessing_cfg = preprocessing_cfg
+        print(
+            f"[FlatSDHCALDataset] Preprocesamiento aplicado"
+            + (f" ({norm_type})" if norm_type else "")
+            + " a todos los arrays en RAM."
+        )
 
-    # ==========================================================
+    # ----------------------------------------------------------
+    # Dataset interface
+    # ----------------------------------------------------------
 
     def len(self) -> int:
         return self._n_events
 
     def get(self, idx: int) -> Data:
-
-        # Reabrir HDF5 si estamos en worker
-        if self._is_hdf5 and not hasattr(self, "_worker_opened"):
-            import h5py
-            self._raw = h5py.File(self._path, "r")
-            self._worker_opened = True
-
         real_idx = int(self._event_indices[idx])
         start = int(self._offsets[real_idx])
         end = int(self._offsets[real_idx + 1])
 
-        if not self._is_hdf5:
-            x = self._x[start:end].unsqueeze(1)
-            y = self._y[start:end].unsqueeze(1)
-            z = self._z[start:end].unsqueeze(1)
-            i = self._i[start:end].unsqueeze(1)
-            j = self._j[start:end].unsqueeze(1)
-            k = self._k[start:end].unsqueeze(1)
-            thr_raw = self._thr[start:end]
-            energy = (
-                self._energy[real_idx]
-                if self._energy is not None
-                else torch.tensor(0.0)
-            )
-        else:
-            x = torch.from_numpy(
-                np.asarray(self._raw["x"][start:end])
-            ).float().unsqueeze(1)
+        x  = self._x[start:end].unsqueeze(1)
+        y  = self._y[start:end].unsqueeze(1)
+        z  = self._z[start:end].unsqueeze(1)
+        i  = self._i[start:end].unsqueeze(1)
+        j  = self._j[start:end].unsqueeze(1)
+        k  = self._k[start:end].unsqueeze(1)
+        thr  = self._thr[start:end].unsqueeze(1)
+        thr1 = self._thr1[start:end].unsqueeze(1)
+        thr2 = self._thr2[start:end].unsqueeze(1)
+        thr3 = self._thr3[start:end].unsqueeze(1)
 
-            y = torch.from_numpy(
-                np.asarray(self._raw["y"][start:end])
-            ).float().unsqueeze(1)
+        time = (
+            self._time[start:end].unsqueeze(1)
+            if self._time is not None
+            else torch.zeros((end - start, 1), dtype=torch.float32)
+        )
 
-            z = torch.from_numpy(
-                np.asarray(self._raw["z"][start:end])
-            ).float().unsqueeze(1)
-
-            i = torch.from_numpy(
-                np.asarray(self._raw["i"][start:end])
-            ).float().unsqueeze(1)
-
-            j = torch.from_numpy(
-                np.asarray(self._raw["j"][start:end])
-            ).float().unsqueeze(1)
-
-            k = torch.from_numpy(
-                np.asarray(self._raw["k"][start:end])
-            ).float().unsqueeze(1)
-
-            thr_raw = torch.from_numpy(
-                np.asarray(self._raw["thr"][start:end])
-            ).float()
-
-            if "energy" in self._raw:
-                energy = torch.tensor(
-                    float(self._raw["energy"][real_idx]),
-                    dtype=torch.float32,
-                )
-            else:
-                energy = torch.tensor(0.0)
-
-        thr = thr_raw.unsqueeze(1)
-        thr1 = (thr_raw == 1).float().unsqueeze(1)
-        thr2 = (thr_raw == 2).float().unsqueeze(1)
-        thr3 = (thr_raw == 3).float().unsqueeze(1)
-
-        # Aplicar preprocesamiento
-        x, y, z, k, thr, energy = self._apply_preprocessing(
-            x, y, z, k, thr, energy
+        energy = (
+            self._energy[real_idx]
+            if self._energy is not None
+            else torch.tensor(0.0)
         )
 
         pos = torch.cat([x, y, z], dim=1)
 
         return Data(
             pos=pos,
-            x=x,
-            y=y,
-            z=z,
-            thr=thr,
-            thr1=thr1,
-            thr2=thr2,
-            thr3=thr3,
-            i=i,
-            j=j,
-            k=k,
+            x=x, y=y, z=z,
+            thr=thr, thr1=thr1, thr2=thr2, thr3=thr3,
+            i=i, j=j, k=k,
+            time=time,
             energy=energy,
         )
 
@@ -393,7 +543,6 @@ class SDHCALDataset(Dataset):
         required_keys = {"x", "y", "z", "i", "j", "k", "thr"}
         for p in self.paths:
             npz = np.load(p, allow_pickle=True)
-            # Validar claves una sola vez (npz.files es una lista, no lee datos)
             available = set(npz.files)
             missing = required_keys - available
             if missing:
@@ -402,7 +551,6 @@ class SDHCALDataset(Dataset):
             n_events = self._infer_num_events(npz)
             self._file_event_counts.append(n_events)
             if self.mode == "memory":
-                # Materializar los arrays en RAM para no releer el disco
                 self._files.append({k: npz[k] for k in npz.files})
             else:
                 self._files.append(None)
@@ -478,7 +626,7 @@ class HitsDataset(SDHCALDataset):
 
 
 # ============================================================
-# Splits train/val
+# Splits train/val  (preprocessing aplicado aquí, no en get())
 # ============================================================
 
 def make_pf_splits(
@@ -488,57 +636,74 @@ def make_pf_splits(
     seed: int = 42,
     preprocessing_cfg: Optional[dict] = None,
     filters: Optional[dict] = None,
+    use_weighted_loss: bool = False,
 ) -> Tuple[Dataset, Dataset]:
     """
-    Crea splits train/val. Acepta:
-      - Un solo .npz plano (FlatSDHCALDataset, rápido)
-      - Varios .npz jagged (HitsDataset, legacy)
+    Crea splits train/val.  Para datasets planos (FlatSDHCALDataset):
+      1. Carga todos los datos en RAM (sin preprocesar).
+      2. Divide en train/val.
+      3. Calcula las stats de normalización SOLO desde el split de train.
+      4. Aplica la normalización UNA VEZ sobre todos los arrays en RAM.
+      5. Devuelve Subsets que apuntan al mismo dataset ya normalizado.
     """
-    # Detección automática: si es un solo archivo y tiene "offsets", es plano
+    # Detección automática de formato
     if len(paths) == 1:
         path = paths[0]
         ext = os.path.splitext(path)[1].lower()
         print("Leyendo dataset desde:", path)
+
         if ext in [".h5", ".hdf5"]:
             with h5py.File(path, "r") as probe:
-                if "offsets" in probe:
-                    dataset = FlatSDHCALDataset(
-                        path,
-                        preprocessing_cfg=preprocessing_cfg,
-                        filters=filters,
-                    )
-                    print(f"Detectado formato HDF5 plano. Eventos: {dataset.len()}")
-                else:
-                    dataset = HitsDataset(paths, mode=mode)
+                is_flat = "offsets" in probe
+            if is_flat:
+                # Crear dataset SIN aplicar preprocessing (preprocessing_cfg=None aquí;
+                # se aplica después del split)
+                dataset = FlatSDHCALDataset(path, preprocessing_cfg=None, filters=filters, use_weighted_loss=use_weighted_loss)
+                print(f"Detectado formato HDF5 plano. Eventos: {dataset.len()}")
+            else:
+                dataset = HitsDataset(paths, mode=mode)
 
         elif ext == ".npz":
             probe = np.load(path, allow_pickle=False)
             if "offsets" in probe:
-                dataset = FlatSDHCALDataset(
-                    path,
-                    preprocessing_cfg=preprocessing_cfg,
-                    filters=filters,
-                )
+                dataset = FlatSDHCALDataset(path, preprocessing_cfg=None, filters=filters, use_weighted_loss=use_weighted_loss)
             else:
                 dataset = HitsDataset(paths, mode=mode)
         else:
             dataset = HitsDataset(paths, mode=mode)
     else:
         dataset = HitsDataset(paths, mode=mode)
-    
+
+    # ----------------------------------------------------------
+    # Split
+    # ----------------------------------------------------------
     N = dataset.len()
     rng = np.random.default_rng(seed)
     indices = rng.permutation(N)
     val_size = int(N * val_ratio)
-
-    val_idx = indices[:val_size]
+    val_idx   = indices[:val_size]
     train_idx = indices[val_size:]
 
+    # ----------------------------------------------------------
+    # Preprocessing (solo para FlatSDHCALDataset)
+    # ----------------------------------------------------------
+    if isinstance(dataset, FlatSDHCALDataset) and preprocessing_cfg:
+        norm_type: Optional[str] = preprocessing_cfg.get("norm_type")
+        if norm_type is None and preprocessing_cfg.get("z_norm", False):
+            norm_type = "z_norm"
+
+        if norm_type in ("z_norm", "minmax"):
+            stats = _load_or_compute_stats(dataset, train_idx, preprocessing_cfg, norm_type)
+        else:
+            stats = {}
+
+        # Applies normalization AND/OR log-energy in one shot
+        dataset._apply_preprocessing_inplace(stats, norm_type, preprocessing_cfg)
+
     train_ds = torch.utils.data.Subset(dataset, train_idx)
-    val_ds = torch.utils.data.Subset(dataset, val_idx)
+    val_ds   = torch.utils.data.Subset(dataset, val_idx)
 
     return train_ds, val_ds
-
 
 
 # ============================================================
@@ -551,24 +716,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Test de make_pf_splits con dataset plano o jagged"
     )
-    parser.add_argument(
-        "--path",
-        type=str,
-        required=True,
-        help="Ruta al dataset (.npz o .h5)",
-    )
-    parser.add_argument(
-        "--val-ratio",
-        type=float,
-        default=0.2,
-        help="Fracción de validación",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="Seed para el split",
-    )
+    parser.add_argument("--path", type=str, required=True, help="Ruta al dataset (.npz o .h5)")
+    parser.add_argument("--val-ratio", type=float, default=0.2, help="Fracción de validación")
+    parser.add_argument("--seed", type=int, default=42, help="Seed para el split")
 
     args = parser.parse_args()
 
@@ -584,7 +734,6 @@ if __name__ == "__main__":
     print(f"Total train samples: {len(train_ds)}")
     print(f"Total val samples:   {len(val_ds)}")
 
-    # Inspeccionar una muestra
     if len(train_ds) > 0:
         sample = train_ds[0]
         print("\n[TEST] Primera muestra (train):")

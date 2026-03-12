@@ -3,6 +3,7 @@ import torch.nn as nn
 from gatr.interface import embed_point, embed_scalar, extract_scalar, extract_point
 from gatr import GATr, SelfAttentionConfig, MLPConfig
 from xformers.ops.fmha import BlockDiagonalMask
+from torch_scatter import scatter_mean
 
 
 class GATrBasicModule(nn.Module):
@@ -25,27 +26,41 @@ class GATrBasicModule(nn.Module):
         attention: SelfAttentionConfig = SelfAttentionConfig(),
         mlp: MLPConfig = MLPConfig(),
         dropout=0.1,
-        out_s_channels=None
-        
-
+        out_s_channels=None,
+        post_dropout=0.0,
+        mv_embedding_mode="single",
+        checkpoint=None,
     ):
         super().__init__()
-        # print(in_s_channels)
         if out_s_channels is None:
             out_s_channels = hidden_s_channels
-        self.gatr = GATr(
+
+        # Validate in_mv_channels matches the embedding mode
+        expected_mv_channels = 2 if mv_embedding_mode == "centroid" else 1
+        assert in_mv_channels == expected_mv_channels, (
+            f"in_mv_channels={in_mv_channels} does not match mv_embedding_mode='{mv_embedding_mode}' "
+            f"(expected {expected_mv_channels})"
+        )
+        self.mv_embedding_mode = mv_embedding_mode
+
+        gatr_kwargs = dict(
             in_mv_channels=in_mv_channels,
             out_mv_channels=out_mv_channels,
             hidden_mv_channels=hidden_mv_channels,
-            in_s_channels=in_s_channels,           # E, p_mod (as real scalars)
+            in_s_channels=in_s_channels,
             out_s_channels=out_s_channels,
             hidden_s_channels=hidden_s_channels,
             num_blocks=num_blocks,
             attention=attention,
             mlp=mlp,
+            dropout_prob=dropout,
         )
+        if checkpoint is not None:
+            gatr_kwargs["checkpoint"] = checkpoint
+        self.gatr = GATr(**gatr_kwargs)
 
-        self.dropout = nn.Dropout(dropout)
+        # Post-encoder dropout applied only on scalar output (preserves equivariance)
+        self.scalar_dropout = nn.Dropout(post_dropout)
 
     # ---------------------------------------------
     # Embedding geométrico (punto o vector)
@@ -53,13 +68,21 @@ class GATrBasicModule(nn.Module):
     def build_geom_embedding(self, mv_v_part, mv_s_part, batch):
         # mv_v_part: (N, 3) for points or (N, 3) for vectors
         # mv_s_part: (N, 1) for scalars (e.g., layer type)
-        mv_vec = embed_point(mv_v_part) # (N,16)
-        mv_scalar = embed_scalar(mv_s_part) # (N, 16)
+        mv_vec = embed_point(mv_v_part)       # (N, 16)
+        mv_scalar = embed_scalar(mv_s_part)   # (N, 16)
 
-        embedded_mv_vec = mv_vec.unsqueeze(1)   # (N,1,16)
-        embedded_mv_scalar = mv_scalar.unsqueeze(1)   # (N,1,16)
-        
-        embedded_geom = embedded_mv_vec + embedded_mv_scalar
+        if self.mv_embedding_mode == "single":
+            embedded_geom = (mv_vec + mv_scalar).unsqueeze(1)  # (N, 1, 16)
+        elif self.mv_embedding_mode == "centroid":
+            # Channel 0: absolute position + scalar
+            ch0 = (mv_vec + mv_scalar).unsqueeze(1)  # (N, 1, 16)
+            # Channel 1: relative position (pos - centroid per event)
+            centroid = scatter_mean(mv_v_part, batch, dim=0)  # (B, 3)
+            pos_rel = mv_v_part - centroid[batch]              # (N, 3)
+            ch1 = embed_point(pos_rel).unsqueeze(1)            # (N, 1, 16)
+            embedded_geom = torch.cat([ch0, ch1], dim=1)       # (N, 2, 16)
+        else:
+            raise ValueError(f"Unknown mv_embedding_mode: {self.mv_embedding_mode}")
 
         return embedded_geom
 
@@ -81,30 +104,26 @@ class GATrBasicModule(nn.Module):
     # ---------------------------------------------
     def forward(self, mv_v_part, mv_s_part, scalars, batch, embedded_geom=None):
         if embedded_geom is None:
-            # construct geometric embedding from point/vector parts
             embedded_geom = self.build_geom_embedding(mv_v_part, mv_s_part, batch)
-            # print(embedded_scalars.shape)
         else:
-            assert embedded_geom.shape[1] == 1, "Embedded geom must have shape (N,1,16)"
-            assert embedded_geom.shape[2] == 16, "Embedded geom must have shape (N,1,16)"
+            assert embedded_geom.shape[-1] == 16, "Embedded geom last dim must be 16"
         mask = self.build_attention_mask(batch)
 
         mv_out, scalar_out = self.gatr(
-            embedded_geom, # (N,1,16)
-            scalars=scalars, # (N, F_in)
-            attention_mask=mask # (N,N with block diagonal structure)
+            embedded_geom,           # (N, C_mv, 16)
+            scalars=scalars,         # (N, F_in)
+            attention_mask=mask
         )
-        # mv_out (B,N,1,1,16)
+        # mv_out: (N, out_mv_channels, 16)
 
-        # Flatten MV part (take blade-1 representation)
-        out = torch.cat([mv_out[:, 0, :], scalar_out], dim=-1) # (N, 16 + F_out)
-        dropout_out = self.dropout(out)
-        mv_out_final, scalar_out_final = torch.split(dropout_out, [16, dropout_out.shape[1]-16], dim=-1) # (N, 16), (N, F_out)
+        # Apply dropout only on scalars — never on mv (preserves equivariance)
+        mv_out_final = mv_out                                    # (N, out_mv_channels, 16)
+        scalar_out_final = self.scalar_dropout(scalar_out)       # (N, F_out)
 
-        point = extract_point(mv_out_final)          # (N, 3)
-        scalar = extract_scalar(mv_out_final.reshape(mv_out_final.shape[0], 1, -1))      # (N, 1, 1)
-        scalar = scalar.view(-1, 1) # (N, 1)
+        # Extract geometric quantities from first mv channel for convenience
+        mv0 = mv_out_final[:, 0, :]                              # (N, 16)
+        point = extract_point(mv0)                               # (N, 3)
+        scalar = extract_scalar(mv0.unsqueeze(1))                # (N, 1, 1)
+        scalar = scalar.view(-1, 1)                              # (N, 1)
 
-        mv_out_final = mv_out_final.view(mv_out_final.shape[0], 1, -1) # (N, 1, 16)
-        # Lo anterior es por si se quiere volver a usar otro bloque GATr, que espera una entrada de forma (N, 1, F_mv)
         return mv_out_final, scalar_out_final, point, scalar
