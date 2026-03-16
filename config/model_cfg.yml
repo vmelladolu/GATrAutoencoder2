@@ -10,17 +10,40 @@
 
 
 
+training:
+    epochs: 1
+    batch_size: 3
+    val_ratio: 0.2
+    lr: 1.0e-3
+    weight_decay: 1.0e-4
+    sched_type: "cosine"        # "none", "cosine", "step"
+    sched_interval: "step"   # "epoch", "step"
+    warmup_pct: 0.1
+    warmup_start_factor: 0.1
+    lr_min: 1.0e-6
+    decay_steps: 30
+    decay_rate: 0.5
+    plot_every: 100       # Plots de comprobación cada N batches de train (0 = desactivado)
+    checkpoint_dir: "checkpoints"
+    ckpt_save_every: 50   # Guarda checkpoint_latest cada N batches
+
 encoder:
     "hidden_mv_channels": 32 # Número de dimensiones internas (más grande, más "capacidad")
     "hidden_s_channels": 256 # Número de dimensiones internas (más grande, más "capacidad")
     "num_blocks": 4 # Número de bloques de atención (más bloques, más profundidad, pero más difícil de entrenar)
-    "in_s_channels": 1 # Número de coordenadas "escalares" -> Nth (si es uno, sería 1, y si es one-hot de 3 clases, sería 3)
+    "in_s_channels": 3 # Número de coordenadas "escalares" -> Nth (si es uno, sería 1, y si es one-hot de 3 clases, sería 3)
     "in_mv_channels": 1 # no tocar
     "out_mv_channels": 1 # no tocar
     "dropout": 0.
     "out_s_channels": 64 # Número de dimensiones de salida para la parte escalar (más grande, más capacidad, pero más difícil de entrenar) 
+    "mv_embedding_mode": "single"  # "single" (default) o "centroid" (2 canales: pos + pos-centroide)
 aggregation:
-    "type": "mean" # Tipo de agregación para el paso de agregación (mean, max, sum, etc.)
+    "type": "attention" # "mean", "max", "sum", "attention"
+    # Para attention pooling:
+    # "num_heads": 4
+    # "num_seeds": 1
+    # "dropout": 0.0
+
 decoder:
   "hidden_mv_channels": 32 # Número de dimensiones internas (más grande, más "capacidad")
   "hidden_s_channels": 256 # Número de dimensiones internas (más grande, más "capacidad")
@@ -29,4 +52,4 @@ decoder:
   "in_mv_channels": 1 # no tocar
   "out_mv_channels": 1 # no tocar
   "dropout": 0.
-  "out_s_channels": 1 
+  "out_s_channels": 3 
