@@ -42,7 +42,7 @@ aggregation:
         "hidden_dims": [256, 128, 64]  # default (comportamiento actual)
         "activation": "gelu"           # "relu" (default) o "gelu"
         "layernorm": true
-        "dropout": 0.1
+        "dropout": 0.0
 
 # Configuración del scheduler del learning rate
 # ========================================================
@@ -68,8 +68,8 @@ scheduler:
 optimizer:
     weight_decay: 0.0001
     lr : 0.001
-    loss_type: "huber"     # "mse" (default), "huber", "log_cosh"
-    huber_delta: 0.5     # solo para huber
+    loss_type: "mse"     # "mse" (default), "huber", "log_cosh"
+    # huber_delta: 1.0     # solo para huber
     ema: true           # activar EMA de pesos (default false)
     ema_decay: 0.999     # decay factor del EMA
 
