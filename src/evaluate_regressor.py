@@ -22,7 +22,7 @@ from utils.lightining_trainer import LightningGATrRegressor
 
 from src.utils.results_utils import metrics, summarize_by_energy, plot_results  
 
-z_norm_yaml_path = "/nfs/cms/arqolmo/SDHCAL_Energy/GATrAutoencoder/stats_hdf5.yml"
+# z_norm_yaml_path = "/nfs/cms/arqolmo/SDHCAL_Energy/GATrAutoencoder/stats_hdf5.yml"
 
 
 def parse_args():
@@ -51,6 +51,7 @@ def parse_args():
     parser.add_argument("--plot", action="store_true", default=None, help="Generar plots con results_utils.plot_results")
     parser.add_argument("-s", "--style", action="count", default=0, help="Whether to use a style for matplotlib.")
     parser.add_argument("--plt-style", default="/nfs/cms/arqolmo/SDHCAL_Energy/utils/newams.mplstyle", required=False, help="Matplotlib style to use.")
+    parser.add_argument("--z-norm-path", required=False, default=None, type=str)
     return parser.parse_args()
 
 
@@ -132,7 +133,14 @@ class _PredictWrapper(L.LightningModule):
         batch_idx_t = data["batch_idx"].to(self.device)
         target = data["logenergy"].to(self.device)
 
-        y_pred = self.module.model(mv_v, mv_s, scalars, batch_idx_t).squeeze(-1)
+        extra_global = {}
+        for key in ("n_thr1", "n_thr2", "n_thr3"):
+            val = data.get(key)
+            if val is not None:
+                extra_global[key] = val.to(self.device)
+
+        y_pred = self.module.model(mv_v, mv_s, scalars, batch_idx_t,
+                                   extra_global_features=extra_global or None).squeeze(-1)
         return {"y_pred": y_pred, "y_true": target.view(-1)}
 
 
@@ -166,7 +174,7 @@ def _resolve_trainer_runtime(args, eval_cfg):
 def _prepare_batch(batch, device, use_scalar, use_one_hot, use_log, z_norm, stats):
     """
     Convierte un Batch de PyG a tensores usando build_batch (misma lógica que el entrenamiento).
-    Devuelve: (mv_v_part, mv_s_part, scalars, batch_idx, target)
+    Devuelve: (mv_v_part, mv_s_part, scalars, batch_idx, target, extra_global_features)
     """
     data = build_batch(
         batch,
@@ -182,7 +190,12 @@ def _prepare_batch(batch, device, use_scalar, use_one_hot, use_log, z_norm, stat
     scalars = data["scalars"].to(device)
     batch_idx = data["batch_idx"].to(device)
     target = data["logenergy"].to(device)
-    return mv_v, mv_s, scalars, batch_idx, target
+    extra_global = {}
+    for key in ("n_thr1", "n_thr2", "n_thr3"):
+        val = data.get(key)
+        if val is not None:
+            extra_global[key] = val.to(device)
+    return mv_v, mv_s, scalars, batch_idx, target, extra_global or None
 
 
 def _load_checkpoint_weights(module: LightningGATrRegressor, ckpt_path: str, device: torch.device):
@@ -244,6 +257,8 @@ def main():
     use_one_hot = bool(_pick(args.use_one_hot, eval_cfg, "use_one_hot", False))
     use_log = bool(_pick(args.use_log, eval_cfg, "use_log", False))
     z_norm = bool(_pick(args.z_norm, eval_cfg, "z_norm", False))
+    z_norm_path = _pick(args.z_norm_path, eval_cfg, "z_norm_path", None)
+    inverse_n1_n2 = bool(eval_cfg.get("inverse_n1_n2", False))
     batch_size = int(_pick(args.batch_size, eval_cfg, "batch_size", 64))
     num_workers = int(_pick(args.num_workers, eval_cfg, "num_workers", 10))
     seed = int(_pick(args.seed, eval_cfg, "seed", 42))
@@ -271,7 +286,7 @@ def main():
         "use_energy": True,
         "use_log": use_log,
         "z_norm": z_norm,
-        "z_norm_yaml_path": z_norm_yaml_path,
+        "z_norm_yaml_path": z_norm_path,
     }
     filters_cfg = cfg_models.get("filters", {})
 
@@ -298,6 +313,17 @@ def main():
 
     loggers["io"].info(f"Dataset cargado: {dataset.len()} eventos (100 % del input)")
 
+    # Patch testbeam threshold labelling: swap thr1 ↔ thr2 before any processing
+    if inverse_n1_n2 and isinstance(dataset, FlatSDHCALDataset):
+        dataset._thr1, dataset._thr2 = dataset._thr2, dataset._thr1
+        # Keep _thr consistent: remap 1→2 and 2→1 in place
+        thr = dataset._thr
+        mask1 = thr == 1
+        mask2 = thr == 2
+        thr[mask1] = 2
+        thr[mask2] = 1
+        loggers["io"].info("inverse_n1_n2=True: threshold labels 1 and 2 have been swapped.")
+
     eval_loader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -308,10 +334,23 @@ def main():
     )
 
     if z_norm:
-        with open(z_norm_yaml_path, "r") as f:
-            stats = yaml.safe_load(f)
+        if z_norm_path is not None:
+            with open(z_norm_path, "r") as f:
+                stats_raw = yaml.safe_load(f)
+            # The YAML has structure {"norm_type": ..., "stats": {...}};
+            # _apply_preprocessing_inplace expects only the inner stats dict.
+            stats = stats_raw.get("stats", stats_raw) if isinstance(stats_raw, dict) else stats_raw
+        else:
+            raise ValueError("If using z norm you must provide the yaml z norm file")
     else:
         stats = None
+
+    # Apply preprocessing (normalization + log-energy) to the dataset in-place.
+    # FlatSDHCALDataset.__init__ intentionally skips this step (it's designed to be
+    # called by make_pf_splits after the train/val split). For evaluation we do it here.
+    if isinstance(dataset, FlatSDHCALDataset):
+        norm_type = "z_norm" if z_norm else None
+        dataset._apply_preprocessing_inplace(stats or {}, norm_type, preprocessing_cfg)
 
     module = LightningGATrRegressor(
         cfg_enc=cfg_enc,
@@ -386,10 +425,11 @@ def main():
         y_true_all, y_pred_all = [], []
         with torch.inference_mode():
             for batch in tqdm(eval_loader):
-                mv_v, mv_s, scalars, batch_idx_t, y_true = _prepare_batch(
+                mv_v, mv_s, scalars, batch_idx_t, y_true, extra_global = _prepare_batch(
                     batch, device, use_scalar, use_one_hot, use_log, z_norm, stats
                 )
-                y_pred = module.model(mv_v, mv_s, scalars, batch_idx_t).squeeze(-1)
+                y_pred = module.model(mv_v, mv_s, scalars, batch_idx_t,
+                                      extra_global_features=extra_global).squeeze(-1)
 
                 y_true_np = y_true.detach().cpu().numpy().reshape(-1)
                 y_pred_np = y_pred.detach().cpu().numpy().reshape(-1)

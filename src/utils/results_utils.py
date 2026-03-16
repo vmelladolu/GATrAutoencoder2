@@ -18,26 +18,46 @@ def metrics(df: pl.DataFrame, target_col: str, pred_col: str="E_reco") -> float:
     yhat = df[pred_col].to_numpy()
     return mean_abs_rel_error(yhat, y)
   
-def summarize_by_energy(df: pl.DataFrame, target_col: str, pred_col: str = "E_reco") -> Dict[Any, Dict[str, Any]]:
+def summarize_by_energy(df: pl.DataFrame, target_col: str, pred_col: str = "E_reco",
+                        n_bins: int = 30) -> Dict[Any, Dict[str, Any]]:
     """
-    Devuelve un dict por cada valor de energía real (asumimos que target suele ser discreto),
-    con error relativo cuadrático medio (E_reco - E_true)^2 / E_true y n.
+    Devuelve un dict por cada valor de energía real.
+    - Si el target es discreto (≤ n_bins valores únicos): agrupa por valor exacto.
+    - Si es continuo: agrupa en n_bins bins equiespaciados y usa el centro del bin como clave.
+    Métrica por grupo: error relativo cuadrático medio (E_reco - E_true)^2 / E_true.
     """
-    # Cálculo en numpy para velocidad
     y = df[target_col].to_numpy()
     yhat = df[pred_col].to_numpy()
     rel = (yhat - y)**2 / np.where(np.abs(y) < 1e-12, 1e-12, y)
-    # Agrupar por valores únicos de y (si es continuo con muchos valores, esto será grande)
+
+    unique_vals = np.unique(y)
     summary = {}
-    for val in np.unique(y):
-        mask = (y == val)
-        if not np.any(mask):
-            continue
-        val = round(float(val),2)
-        summary[val] = {
-            "mean_abs_rel_error": float(np.mean(rel[mask])),
-            "count": int(np.sum(mask)),
-        }
+
+    if len(unique_vals) <= n_bins:
+        for val in unique_vals:
+            mask = (y == val)
+            if not np.any(mask):
+                continue
+            key = round(float(val), 2)
+            summary[key] = {
+                "mean_abs_rel_error": float(np.mean(rel[mask])),
+                "count": int(np.sum(mask)),
+            }
+    else:
+        bins = np.linspace(y.min(), y.max(), n_bins + 1)
+        bin_idx = np.digitize(y, bins)
+        for b in range(1, n_bins + 1):
+            mask = (bin_idx == b)
+            if not np.any(mask):
+                continue
+            center = round(float(0.5 * (bins[b - 1] + bins[b])), 2)
+            summary[center] = {
+                "mean_abs_rel_error": float(np.mean(rel[mask])),
+                "count": int(np.sum(mask)),
+                "E_true_mean": round(float(y[mask].mean()), 4),
+                "E_true_range": [round(float(y[mask].min()), 4), round(float(y[mask].max()), 4)],
+            }
+
     return summary
 
 
@@ -198,7 +218,12 @@ def plot_results(fitter, df: pl.DataFrame):
 
                 rel_res = (group["E_reco"] - group[fitter.target_col]) / group[fitter.target_col]
                 E_pred_means.append(group["E_reco"].mean())
-                mu, sigma = norm.fit(rel_res)
+                rel_res_finite = rel_res[np.isfinite(rel_res)]
+                if len(rel_res_finite) < 2:
+                    mean_vals.append(float("nan"))
+                    std_vals.append(float("nan"))
+                    continue
+                mu, sigma = norm.fit(rel_res_finite)
 
                 mean_vals.append(mu)
                 std_vals.append(sigma)
@@ -225,8 +250,25 @@ def plot_results(fitter, df: pl.DataFrame):
         plt.close()
 
         # --- Plot 4: Boxplot de E_reco por cada E_true ---
-        unique_energies = sorted(df_plot[fitter.target_col].unique())
-        box_data = [df_plot.loc[df_plot[fitter.target_col] == e, "E_reco"].values for e in unique_energies]
+        _MAX_BOX_BINS = 30
+        n_unique_box = df_plot[fitter.target_col].nunique()
+        if n_unique_box <= _MAX_BOX_BINS:
+            unique_energies = sorted(df_plot[fitter.target_col].unique())
+            box_data = [df_plot.loc[df_plot[fitter.target_col] == e, "E_reco"].values for e in unique_energies]
+            box_labels = [f"{e:.0f}" for e in unique_energies]
+        else:
+            n_bins = _MAX_BOX_BINS
+            bins = np.linspace(df_plot[fitter.target_col].min(), df_plot[fitter.target_col].max(), n_bins + 1)
+            bin_idx = np.digitize(df_plot[fitter.target_col], bins)
+            unique_energies, box_data, box_labels = [], [], []
+            for b in range(1, n_bins + 1):
+                mask = bin_idx == b
+                if mask.sum() == 0:
+                    continue
+                center = 0.5 * (bins[b - 1] + bins[b])
+                unique_energies.append(center)
+                box_data.append(df_plot.loc[mask, "E_reco"].values)
+                box_labels.append(f"{center:.0f}")
 
         fig_box, ax_box = plt.subplots(figsize=(max(8, len(unique_energies) * 0.8), 6))
         bp = ax_box.boxplot(box_data, positions=range(len(unique_energies)), widths=0.6,
@@ -235,7 +277,7 @@ def plot_results(fitter, df: pl.DataFrame):
         for patch in bp['boxes']:
             patch.set_facecolor('lightblue')
         ax_box.set_xticks(range(len(unique_energies)))
-        ax_box.set_xticklabels([f"{e:.0f}" for e in unique_energies], rotation=45)
+        ax_box.set_xticklabels(box_labels, rotation=45)
         ax_box.plot(range(len(unique_energies)), unique_energies, 'r--', label=r"$E_{reco} = E_{true}$")
         ax_box.set_xlabel(r"$E_{true}$ [GeV]")
         ax_box.set_ylabel(r"$E_{reco}$ [GeV]")
@@ -246,6 +288,137 @@ def plot_results(fitter, df: pl.DataFrame):
         fig_box.savefig(os.path.join(output_fig_path, "boxplot_E_reco_per_E_true_mlp.png"), dpi=200)
         plt.close(fig_box)
         
+        # --- Plot 5: σ(E_pred)/μ(E_pred) vs E_true (Gaussian fit to raw predictions) ---
+        df_gauss = df.select([fitter.target_col, "E_reco"]).to_pandas()
+
+        gauss_mu_vals = []
+        gauss_sigma_vals = []
+        gauss_E_true_vals = []
+
+        if df_gauss[fitter.target_col].nunique() < 30:
+            grouped_gauss = df_gauss.groupby(fitter.target_col)
+            for E_true, group in grouped_gauss:
+                e_reco_finite = group["E_reco"].values[np.isfinite(group["E_reco"].values)]
+                if len(e_reco_finite) < 2:
+                    continue
+                gauss_E_true_vals.append(E_true)
+                mu_pred, sigma_pred = norm.fit(e_reco_finite)
+                gauss_mu_vals.append(mu_pred)
+                gauss_sigma_vals.append(sigma_pred)
+        else:
+            n_bins = 30
+            bins_gauss = np.linspace(
+                df_gauss[fitter.target_col].min(),
+                df_gauss[fitter.target_col].max(),
+                n_bins + 1
+            )
+            df_gauss["E_bin"] = np.digitize(df_gauss[fitter.target_col], bins_gauss)
+            grouped_gauss = df_gauss.groupby("E_bin")
+            for _, group in grouped_gauss:
+                e_reco_finite = group["E_reco"].values[np.isfinite(group["E_reco"].values)]
+                if len(e_reco_finite) < 2:
+                    continue
+                gauss_E_true_vals.append(group[fitter.target_col].mean())
+                mu_pred, sigma_pred = norm.fit(e_reco_finite)
+                gauss_mu_vals.append(mu_pred)
+                gauss_sigma_vals.append(sigma_pred)
+
+        gauss_E_true_vals = np.array(gauss_E_true_vals)
+        gauss_mu_vals = np.array(gauss_mu_vals)
+        gauss_sigma_vals = np.array(gauss_sigma_vals)
+        resolution_gauss = gauss_sigma_vals / np.abs(gauss_mu_vals)
+
+        plt.figure(figsize=(8, 6))
+        plt.scatter(gauss_E_true_vals, resolution_gauss, s=50, color="darkorange", alpha=0.8,
+                    label=r"$\sigma(E_{pred}) / \mu(E_{pred})$")
+        plt.plot(gauss_E_true_vals, resolution_gauss, color="coral", alpha=0.6)
+        plt.xlabel(r"$E_{true}$ [GeV]")
+        plt.ylabel(r"$\sigma(E_{pred}) / \mu(E_{pred})$")
+        plt.title(r"$\sigma(E_{pred}) / \mu(E_{pred})$ vs $E_{true}$ (Gaussian fit)")
+        plt.grid(True, linestyle=":", alpha=0.7)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_fig_path, "resolution_gauss_fit_vs_E_true.png"), dpi=200)
+        plt.close()
+
+        # --- Plot 6 & 7: Resolution & Linearity with double Gaussian fit (paper method) ---
+        df_dg = df.select([fitter.target_col, "E_reco"]).to_pandas()
+
+        dg_E_true_vals = []
+        dg_mu2_vals = []
+        dg_sigma2_vals = []
+
+        def _double_gauss_fit(e_reco_arr):
+            e_reco_arr = e_reco_arr[np.isfinite(e_reco_arr)]
+            if len(e_reco_arr) < 3:
+                return float("nan"), float("nan")
+            mu1, sigma1 = norm.fit(e_reco_arr)
+            lo, hi = mu1 - 1.5 * sigma1, mu1 + 1.5 * sigma1
+            filtered = e_reco_arr[(e_reco_arr >= lo) & (e_reco_arr <= hi)]
+            if len(filtered) < 3:
+                return mu1, sigma1
+            mu2, sigma2 = norm.fit(filtered)
+            return mu2, sigma2
+
+        if df_dg[fitter.target_col].nunique() < 30:
+            grouped_dg = df_dg.groupby(fitter.target_col)
+            for E_true, group in grouped_dg:
+                mu2, sigma2 = _double_gauss_fit(group["E_reco"].values)
+                dg_E_true_vals.append(E_true)
+                dg_mu2_vals.append(mu2)
+                dg_sigma2_vals.append(sigma2)
+        else:
+            n_bins = 30
+            bins_dg = np.linspace(
+                df_dg[fitter.target_col].min(),
+                df_dg[fitter.target_col].max(),
+                n_bins + 1
+            )
+            df_dg["E_bin"] = np.digitize(df_dg[fitter.target_col], bins_dg)
+            grouped_dg = df_dg.groupby("E_bin")
+            for _, group in grouped_dg:
+                mu2, sigma2 = _double_gauss_fit(group["E_reco"].values)
+                dg_E_true_vals.append(group[fitter.target_col].mean())
+                dg_mu2_vals.append(mu2)
+                dg_sigma2_vals.append(sigma2)
+
+        dg_E_true_vals = np.array(dg_E_true_vals)
+        dg_mu2_vals = np.array(dg_mu2_vals)
+        dg_sigma2_vals = np.array(dg_sigma2_vals)
+
+        # --- Plot 6: Resolution R = sigma2 / mu2 vs E_true ---
+        resolution_dg = dg_sigma2_vals / np.abs(dg_mu2_vals)
+
+        plt.figure(figsize=(8, 6))
+        plt.scatter(dg_E_true_vals, resolution_dg, s=50, color="teal", alpha=0.8,
+                    label=r"$R = \sigma_{E_{reco}} / E_{reco}$")
+        plt.plot(dg_E_true_vals, resolution_dg, color="darkslategray", alpha=0.6)
+        plt.xlabel(r"$E_{mc}$ [GeV]")
+        plt.ylabel(r"$R = \sigma_{E_{reco}} / E_{reco}$")
+        plt.title(r"Resolution $R = \sigma_{E_{reco}} / E_{reco}$ vs $E_{mc}$ (double Gaussian fit)")
+        plt.grid(True, linestyle=":", alpha=0.7)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_fig_path, "resolution_double_gauss_vs_E_true.png"), dpi=200)
+        plt.close()
+
+        # --- Plot 7: Linearity dE/E = (mu2 - E_mc) / E_mc vs E_true ---
+        linearity = (dg_mu2_vals - dg_E_true_vals) / dg_E_true_vals
+
+        plt.figure(figsize=(8, 6))
+        plt.scatter(dg_E_true_vals, linearity, s=50, color="crimson", alpha=0.8,
+                    label=r"$\Delta E / E_{mc}$")
+        plt.plot(dg_E_true_vals, linearity, color="firebrick", alpha=0.6)
+        plt.axhline(0, color="black", linestyle="--", linewidth=1, alpha=0.6)
+        plt.xlabel(r"$E_{mc}$ [GeV]")
+        plt.ylabel(r"$\Delta E / E_{mc} = (E_{reco} - E_{mc}) / E_{mc}$")
+        plt.title(r"Linearity $\Delta E / E_{mc}$ vs $E_{mc}$ (double Gaussian fit)")
+        plt.grid(True, linestyle=":", alpha=0.7)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_fig_path, "linearity_double_gauss_vs_E_true.png"), dpi=200)
+        plt.close()
+
         if hasattr(fitter, 'use_wandb') and fitter.use_wandb and not fitter.cfg.get("trained", False):
             wandb.log({
                 "E_reco_vs_E_true": wandb.Image(os.path.join(output_fig_path, "E_reco_vs_E_true_mlp_w_error.png")),
@@ -253,6 +426,9 @@ def plot_results(fitter, df: pl.DataFrame):
                 "resolution_vs_inv_sqrt_E": wandb.Image(os.path.join(output_fig_path, "std_vs_E_true_mlp.png")),
                 "boxplot_E_reco_per_E_true": wandb.Image(os.path.join(output_fig_path, "boxplot_E_reco_per_E_true_mlp.png")),
                 "relative_residuals_by_energy": wandb.Image(os.path.join(output_fig_path, "relative_residuals_by_energy_mlp.png")),
+                "resolution_gauss_fit": wandb.Image(os.path.join(output_fig_path, "resolution_gauss_fit_vs_E_true.png")),
+                "resolution_double_gauss": wandb.Image(os.path.join(output_fig_path, "resolution_double_gauss_vs_E_true.png")),
+                "linearity_double_gauss": wandb.Image(os.path.join(output_fig_path, "linearity_double_gauss_vs_E_true.png")),
             })
 
         fitter.loggers["io"].info(f"Plots saved to in {output_fig_path}")

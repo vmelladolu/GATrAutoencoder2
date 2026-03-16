@@ -31,3 +31,4 @@ wandb/
 *png
 *.ckpt
 gatr_autoencoder_graph
+*.json
