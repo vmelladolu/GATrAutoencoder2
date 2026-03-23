@@ -187,7 +187,7 @@ def _prepare_batch(batch, device, use_scalar, use_one_hot, use_time, use_log, z_
         use_log=use_log,
         use_energy=True,
         z_norm=z_norm,
-        stats=stats,
+        stats=stats
     )
     mv_v = data["mv_v_part"].to(device)
     mv_s = data["mv_s_part"].to(device)
@@ -367,7 +367,6 @@ def main():
     if isinstance(dataset, FlatSDHCALDataset):
         norm_type = "z_norm" if z_norm else None
         dataset._apply_preprocessing_inplace(stats or {}, norm_type, preprocessing_cfg)
-
     module = LightningGATrRegressor(
         cfg_enc=cfg_enc,
         cfg_agg=cfg_agg,
@@ -443,8 +442,7 @@ def main():
         with torch.inference_mode():
             for batch in tqdm(eval_loader):
                 mv_v, mv_s, scalars, batch_idx_t, y_true, extra_global = _prepare_batch(
-                    batch, device, use_scalar, use_one_hot, use_time, use_log, z_norm, stats
-                )
+                    batch, device, use_scalar, use_one_hot, use_time, use_log, z_norm, stats)
                 y_pred = module.model(mv_v, mv_s, scalars, batch_idx_t,
                                       extra_global_features=extra_global).squeeze(-1)
 

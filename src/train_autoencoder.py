@@ -20,8 +20,10 @@ except ImportError:  # pragma: no cover
 
 try:
     import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401  (registra la proyección 3D)
 except ImportError:  # pragma: no cover
     plt = None
+import numpy as np
 import yaml
 
 from utils.batch_utils import build_batch
@@ -41,6 +43,46 @@ def reconstruction_loss(outputs, mv_v_part, mv_s_part, scalars, use_scalar=False
         scalar_loss = nn.functional.mse_loss(s_rec, scalars)
 
         return loss_xyz + loss_depth + scalar_loss
+
+
+def _plot_event_3d(xyz, xyz_rec):
+    if plt is None:
+        return None
+    fig = plt.figure(figsize=(7, 6))
+    ax = fig.add_subplot(111, projection="3d")
+    ax.scatter(xyz[:, 0], xyz[:, 1], xyz[:, 2], s=3, alpha=0.6, label="orig")
+    ax.scatter(xyz_rec[:, 0], xyz_rec[:, 1], xyz_rec[:, 2], s=3, alpha=0.6, label="rec")
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.set_zlabel("z")
+    ax.set_title("3D reconstruction")
+    ax.legend()
+    fig.tight_layout()
+    return fig
+
+
+def _plot_error_distributions(r_err_x, r_err_y, r_err_z, r_err_depth, r_err_thr, use_scalar=True):
+    if plt is None:
+        return None
+    features = [("x", r_err_x), ("y", r_err_y), ("z", r_err_z), ("thr", r_err_thr)]
+    if use_scalar:
+        features.insert(3, ("k (depth)", r_err_depth))
+    n = len(features)
+    fig, axes = plt.subplots(1, n, figsize=(4 * n, 4))
+    if n == 1:
+        axes = [axes]
+    for ax, (name, err) in zip(axes, features):
+        p1, p99 = np.percentile(err, [1, 99])
+        err_clipped = np.clip(err, p1, p99)
+        ax.hist(err_clipped, bins=60, alpha=0.75)
+        ax.axvline(float(np.mean(err)), color="r", linestyle="--",
+                   label=f"μ={np.mean(err):.3f}\nσ={np.std(err):.3f}")
+        ax.set_title(f"Rel. err: {name}")
+        ax.set_xlabel("(rec − true) / |true|")
+        ax.set_ylabel("counts")
+        ax.legend(fontsize=8)
+    fig.tight_layout()
+    return fig
 
 
 def _plot_event_projections(xyz, xyz_rec):
@@ -223,7 +265,22 @@ def parse_args():
     parser.add_argument("--use_scalar", action="store_true", help="Si se incluye la coordenada escalar (profundidad) en el modelo")
     parser.add_argument("--use_one_hot", action="store_true", help="Si se usa one-hot encoding para las clases de thr en lugar de un solo valor escalar")
     parser.add_argument("--use_energy", action="store_true", help="Si se incluye la energía como parte de la entrada/salida (requiere modificar el modelo y los datos)")
-    parser.add_argument("--z_norm", action="store_true", help="Si se aplica normalización z-score a las coordenadas espaciales y otras características usando estadísticas precomputadas")
+    parser.add_argument("--z_norm", action="store_true", help="[Alias] Equivalente a --norm z_norm")
+    parser.add_argument(
+        "--norm",
+        choices=["z_norm", "minmax"],
+        default=None,
+        help="Tipo de normalización aplicada al dataset (z_norm: escalado estándar; minmax: Min-Max). "
+             "Se aplica una sola vez al cargar los datos, no en cada batch.",
+    )
+    parser.add_argument(
+        "--norm_yaml",
+        type=str,
+        default=None,
+        help="Ruta al YAML de estadísticas de normalización. "
+             "Si no se proporciona o el archivo no existe, se calcula desde el split de train "
+             "y se guarda junto al dataset.",
+    )
     parser.add_argument("--test", action="store_true", help="Ejecuta un forward de prueba en GPU y dibuja la red")
     parser.add_argument("--epochs", type=int, help="Número de épocas de entrenamiento")
     parser.add_argument("--batch_size", type=int, help="Tamaño de batch para entrenamiento y validación")
@@ -244,7 +301,8 @@ def parse_args():
     parser.add_argument("--checkpoint_dir", type=str, help="Directorio donde guardar los checkpoints")
     parser.add_argument("--ckpt_save_every", type=int, help="Guarda checkpoint_latest cada N batches (0 = desactivado)")
     parser.add_argument("--resume", type=str, default=None, help="Ruta a un checkpoint desde el que reanudar el entrenamiento")
-
+    # Dispositivo
+    parser.add_argument("--device", type=str, default=None, help="Dispositivo para entrenamiento (ej. 'cuda:0' o 'cpu'). Por defecto se detecta automáticamente.")
     # Paso 1: parsear solo --cfg para saber qué YAML cargar
     pre_args, _ = parser.parse_known_args()
     cfg_path = pre_args.cfg
@@ -289,6 +347,9 @@ def main():
 
     _log(f"Dispositivo: {'cuda' if torch.cuda.is_available() else 'cpu'}")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if args.device is not None:
+        device = torch.device(args.device)
+        _log(f"Usando dispositivo especificado: {device}")
     _log("Construyendo modelo...")
     model = GATrAutoencoder(cfg_enc=cfg_enc, cfg_agg=cfg_agg, cfg_dec=cfg_dec, latent_s_channels=2)
     model.to(device)
@@ -300,12 +361,24 @@ def main():
     data_paths = args.data_paths if args.data_paths else [
         "../data/Datos/El_50GeV.npz_flat.npz",
     ]
+    norm_type = args.norm or ("z_norm" if args.z_norm else None)
+    preprocessing_cfg = {
+        "use_scalar":     args.use_scalar,
+        "use_one_hot":    args.use_one_hot,
+        "use_energy":     args.use_energy,
+        "norm_type":      norm_type,
+        "norm_yaml_path": args.norm_yaml,   # None → se auto-deriva del path del dataset
+        "z_norm":         args.z_norm,      # retrocompatibilidad con make_pf_splits
+    }
+    filters_cfg = cfg_models.get("filters", {})
     val_ratio = args.val_ratio
     mode = args.mode
     print(f"Cargando datos desde: {data_paths} con val_ratio={val_ratio} y mode={mode}")
     t0 = time.time()
     train_dataset, val_dataset = make_pf_splits(
-        data_paths, val_ratio=val_ratio, mode=mode
+        data_paths, val_ratio=val_ratio, mode=mode,
+        preprocessing_cfg=preprocessing_cfg,
+        filters=filters_cfg,
     )
     _log(f"Datasets listos en {time.time()-t0:.1f}s — train={len(train_dataset)}, val={len(val_dataset)}")
 
@@ -346,6 +419,7 @@ def main():
         _log(f"wandb.watch() completado en {time.time()-t0:.1f}s")
         wandb.define_metric("global_step")
         wandb.define_metric("loss/train_batch", step_metric="global_step")
+        wandb.define_metric("lr/step", step_metric="global_step")
         wandb.define_metric("train/reco_projections", step_metric="global_step")
         wandb.define_metric("epoch")
         wandb.define_metric("loss/train", step_metric="epoch")
@@ -388,7 +462,7 @@ def main():
                 _log(f"  Primer batch recibido (batch_num=0)")
             if batch_num < 3 or batch_num % 50 == 0:
                 _log(f"  [train] batch {batch_num+1}/{len(train_loader)}")
-            data = build_batch(batch, use_scalar=use_scalar, use_one_hot=use_one_hot, use_energy=use_energy, z_norm=args.z_norm)
+            data = build_batch(batch, use_scalar=use_scalar, use_one_hot=use_one_hot, use_energy=use_energy)
             mv_v_part = data["mv_v_part"].to(device)
             mv_s_part = data["mv_s_part"].to(device)
             scalars = data["scalars"].to(device)
@@ -415,7 +489,11 @@ def main():
                 _log(f"  [ckpt] checkpoint_latest guardado (step={global_step})")
 
             if wandb is not None:
-                log_dict = {"loss/train_batch": loss.item(), "global_step": global_step}
+                log_dict = {
+                    "loss/train_batch": loss.item(),
+                    "lr/step": optimizer.param_groups[0]["lr"],
+                    "global_step": global_step,
+                }
                 if plt is not None and args.plot_every > 0 and global_step % args.plot_every == 0:
                     point_rec_cpu = outputs["point_rec"].detach().cpu()
                     mv_v_cpu = mv_v_part.detach().cpu()
@@ -446,7 +524,7 @@ def main():
             for val_batch_num, batch in enumerate(val_loader):
                 if val_batch_num == 0:
                     _log(f"  Primer val batch recibido")
-                data = build_batch(batch, use_scalar=use_scalar, use_one_hot=use_one_hot, use_energy=use_energy, z_norm=args.z_norm)
+                data = build_batch(batch, use_scalar=use_scalar, use_one_hot=use_one_hot, use_energy=use_energy)
                 mv_v_part = data["mv_v_part"].to(device)
                 mv_s_part = data["mv_s_part"].to(device)
                 scalars = data["scalars"].to(device)
@@ -519,12 +597,26 @@ def main():
                     if event_ids:
                         ev = random.choice(event_ids)
                         mask = batch_idx == ev
-                        fig = _plot_event_projections(
-                            mv_v_part[mask].numpy(), point_rec[mask].numpy()
-                        )
-                        if fig is not None:
-                            wandb.log({"reco/projections": wandb.Image(fig), "epoch": epoch})
-                            plt.close(fig)
+                        xyz_orig = mv_v_part[mask].numpy()
+                        xyz_rec  = point_rec[mask].numpy()
+
+                        fig2d = _plot_event_projections(xyz_orig, xyz_rec)
+                        if fig2d is not None:
+                            wandb.log({"reco/projections": wandb.Image(fig2d), "epoch": epoch})
+                            plt.close(fig2d)
+
+                        fig3d = _plot_event_3d(xyz_orig, xyz_rec)
+                        if fig3d is not None:
+                            wandb.log({"reco/3d": wandb.Image(fig3d), "epoch": epoch})
+                            plt.close(fig3d)
+
+                    fig_err = _plot_error_distributions(
+                        r_err_x, r_err_y, r_err_z, r_err_depth, r_err_thr,
+                        use_scalar=use_scalar,
+                    )
+                    if fig_err is not None:
+                        wandb.log({"reco/error_distributions": wandb.Image(fig_err), "epoch": epoch})
+                        plt.close(fig_err)
 
 
 if __name__ == "__main__":
