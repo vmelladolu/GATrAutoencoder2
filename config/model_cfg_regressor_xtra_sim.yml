@@ -90,7 +90,8 @@ decoder:
 
 
 evaluate:
-  checkpoint: /nfs/cms/arqolmo/SDHCAL_Energy/GATrAutoencoder/trained_full_data_scheduled_xtra_sim/gatr_regressor_final.pt
+  checkpoint: "/nfs/cms/arqolmo/SDHCAL_Energy/GATrAutoencoder/trained_full_data_scheduled_xtra_sim/checkpoints/gatr_regressor_epochepoch=499_stepstep=134000-v1.ckpt"
+#   checkpoint: /nfs/cms/arqolmo/SDHCAL_Energy/GATrAutoencoder/trained_full_data_scheduled_xtra_sim/gatr_regressor_final.pt
   use_scalar: True
   z_norm: True
   use_log: True

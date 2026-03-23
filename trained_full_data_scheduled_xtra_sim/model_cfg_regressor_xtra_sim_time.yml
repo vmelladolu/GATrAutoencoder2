@@ -43,6 +43,7 @@ aggregation:
         "activation": "gelu"           # "relu" (default) o "gelu"
         "layernorm": true
         "dropout": 0.0
+        "legacy_always_dropout": true  # checkpoint entrenado con Dropout siempre añadido
 
 # Configuración del scheduler del learning rate
 # ========================================================
@@ -68,8 +69,8 @@ scheduler:
 optimizer:
     weight_decay: 0.0001
     lr : 0.001
-    loss_type: "mse"     # "mse" (default), "huber", "log_cosh"
-    # huber_delta: 1.0     # solo para huber
+    loss_type: "huber"     # "mse" (default), "huber", "log_cosh"
+    huber_delta: 0.5     # solo para huber
     ema: true           # activar EMA de pesos (default false)
     ema_decay: 0.999     # decay factor del EMA
 
@@ -90,13 +91,13 @@ decoder:
 
 
 evaluate:
-  inverse_n1_n2: True
-  checkpoint: /nfs/cms/arqolmo/SDHCAL_Energy/GATrAutoencoder/trained_full_data_scheduled_xtra_sim/gatr_regressor_final.pt
+  checkpoint: /nfs/cms/arqolmo/SDHCAL_Energy/GATrAutoencoder/trained_full_data_scheduled_xtra_sim/gatr_regressor_final_w_time.pt
   use_scalar: True
+  use_one_hot: True
   z_norm: True
   use_log: True
+  use_time: True
   data_paths:
-  - /nfs/cms/arqolmo/SDHCAL_Energy/GATrAutoencoder/train_test_data/data_jorge_filtered.h5
-#   - /nfs/cms/arqolmo/SDHCAL_Energy/GATrAutoencoder/train_test_data/sim_data_test.h5
+  - /nfs/cms/arqolmo/SDHCAL_Energy/GATrAutoencoder/train_test_data/sim_data_test.h5
 #   - /nfs/cms/arqolmo/SDHCAL_Energy/GATrAutoencoder/cruz_dataset_filtered.h5
-  out: ./eval_regressor_sim_test_testbeam_data_JORGE
+  out: ./eval_regressor_testsimdata_w_time

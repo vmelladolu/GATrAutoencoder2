@@ -75,6 +75,9 @@ class GATrRegressor(nn.Module):
         head_activation = head_cfg.get("activation", "relu")
         head_use_layernorm = head_cfg.get("layernorm", True)
         head_dropout = head_cfg.get("dropout", 0.0)
+        # Compatibilidad con checkpoints entrenados antes de que se añadiera
+        # el guard `if head_dropout > 0`. Activar solo para cargar esos checkpoints.
+        legacy_always_dropout = head_cfg.get("legacy_always_dropout", False)
 
         act_fn = nn.GELU if head_activation == "gelu" else nn.ReLU
 
@@ -86,7 +89,7 @@ class GATrRegressor(nn.Module):
         for dim in head_hidden:
             layers.append(nn.Linear(prev_dim, dim))
             layers.append(act_fn())
-            if head_dropout > 0:
+            if legacy_always_dropout or head_dropout > 0:
                 layers.append(nn.Dropout(head_dropout))
             if head_use_layernorm and dim > 64:
                 layers.append(nn.LayerNorm(dim))

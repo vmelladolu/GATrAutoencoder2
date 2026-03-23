@@ -38,6 +38,7 @@ def parse_args():
     parser.add_argument("--mode", choices=["memory", "lazy"], default=None, help="Modo de carga de datos (solo legacy npz jagged)")
     parser.add_argument("--use_scalar", action="store_true", default=None, help="Incluir escalares")
     parser.add_argument("--use_one_hot", action="store_true", default=None, help="One-hot threshold")
+    parser.add_argument("--use_time", action="store_true", default=None, help="Incluir tiempo de hit como input escalar extra")
     parser.add_argument("--use_log", action="store_true", default=None, help="Target entrenado en log(E)")
     parser.add_argument("--z_norm", action="store_true", default=None, help="Aplicar z-score a features")
     parser.add_argument("--batch_size", type=int, default=None, help="Batch size de evaluación")
@@ -108,11 +109,12 @@ class _PredictWrapper(L.LightningModule):
     Wrapper ligero para usar Trainer.predict() con multi-GPU.
     Delega el forward al módulo original y devuelve predicciones + targets.
     """
-    def __init__(self, module, use_scalar, use_one_hot, use_log, z_norm, stats):
+    def __init__(self, module, use_scalar, use_one_hot, use_time, use_log, z_norm, stats):
         super().__init__()
         self.module = module
         self.use_scalar = use_scalar
         self.use_one_hot = use_one_hot
+        self.use_time = use_time
         self.use_log = use_log
         self.z_norm = z_norm
         self.stats = stats
@@ -122,6 +124,7 @@ class _PredictWrapper(L.LightningModule):
             batch,
             use_scalar=self.use_scalar,
             use_one_hot=self.use_one_hot,
+            use_time=self.use_time,
             use_log=self.use_log,
             use_energy=True,
             z_norm=self.z_norm,
@@ -171,7 +174,7 @@ def _resolve_trainer_runtime(args, eval_cfg):
     return accelerator, devices_cfg, strategy
 
 
-def _prepare_batch(batch, device, use_scalar, use_one_hot, use_log, z_norm, stats):
+def _prepare_batch(batch, device, use_scalar, use_one_hot, use_time, use_log, z_norm, stats):
     """
     Convierte un Batch de PyG a tensores usando build_batch (misma lógica que el entrenamiento).
     Devuelve: (mv_v_part, mv_s_part, scalars, batch_idx, target, extra_global_features)
@@ -180,6 +183,7 @@ def _prepare_batch(batch, device, use_scalar, use_one_hot, use_log, z_norm, stat
         batch,
         use_scalar=use_scalar,
         use_one_hot=use_one_hot,
+        use_time=use_time,
         use_log=use_log,
         use_energy=True,
         z_norm=z_norm,
@@ -255,6 +259,7 @@ def main():
     mode = _pick(args.mode, eval_cfg, "mode", "lazy")
     use_scalar = bool(_pick(args.use_scalar, eval_cfg, "use_scalar", False))
     use_one_hot = bool(_pick(args.use_one_hot, eval_cfg, "use_one_hot", False))
+    use_time = bool(_pick(args.use_time, eval_cfg, "use_time", False))
     use_log = bool(_pick(args.use_log, eval_cfg, "use_log", False))
     z_norm = bool(_pick(args.z_norm, eval_cfg, "z_norm", False))
     z_norm_path = _pick(args.z_norm_path, eval_cfg, "z_norm_path", None)
@@ -280,9 +285,20 @@ def main():
     cfg_enc = cfg_models["encoder"]
     cfg_agg = cfg_models["aggregation"]
 
+    # Ajustar in_s_channels dinámicamente igual que en entrenamiento
+    n_thr_channels = 3 if use_one_hot else 1
+    in_s_channels = n_thr_channels + (1 if use_time else 0)
+    if cfg_enc["in_s_channels"] != in_s_channels:
+        wprint(
+            f"Ajustando encoder in_s_channels: {cfg_enc['in_s_channels']} → {in_s_channels} "
+            f"(use_one_hot={use_one_hot}, use_time={use_time})"
+        )
+        cfg_enc["in_s_channels"] = in_s_channels
+
     preprocessing_cfg = {
         "use_scalar": use_scalar,
         "use_one_hot": use_one_hot,
+        "use_time": use_time,
         "use_energy": True,
         "use_log": use_log,
         "z_norm": z_norm,
@@ -358,6 +374,7 @@ def main():
         class_weights=getattr(dataset, "weights", None),
         use_scalar=use_scalar,
         use_one_hot=use_one_hot,
+        use_time=use_time,
         use_log=use_log,
         z_norm=z_norm,
         stats=stats,
@@ -386,7 +403,7 @@ def main():
         # ======== Multi-GPU con Lightning Trainer.predict() ========
         loggers["io"].info(f"Modo multi-GPU activado ({devices_cfg} dispositivos).")
         predict_wrapper = _PredictWrapper(
-            module, use_scalar, use_one_hot, use_log, z_norm, stats
+            module, use_scalar, use_one_hot, use_time, use_log, z_norm, stats
         )
         trainer = L.Trainer(
             accelerator=accelerator,
@@ -426,7 +443,7 @@ def main():
         with torch.inference_mode():
             for batch in tqdm(eval_loader):
                 mv_v, mv_s, scalars, batch_idx_t, y_true, extra_global = _prepare_batch(
-                    batch, device, use_scalar, use_one_hot, use_log, z_norm, stats
+                    batch, device, use_scalar, use_one_hot, use_time, use_log, z_norm, stats
                 )
                 y_pred = module.model(mv_v, mv_s, scalars, batch_idx_t,
                                       extra_global_features=extra_global).squeeze(-1)
