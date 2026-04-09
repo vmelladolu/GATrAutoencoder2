@@ -21,8 +21,11 @@ class GATrAutoencoder(nn.Module):
         cfg_dec,
         cfg_agg={"type": "mean"}, # or "max" or None
         latent_s_channels=16,
+        use_vae=False,
+        event_embed_dim=32,
     ):
         super().__init__()
+        self.use_vae = use_vae
 
         # Encoder: maps inputs -> latent scalars (and latent mv if needed)
         self.encoder = GATrBasicModule(
@@ -33,7 +36,8 @@ class GATrAutoencoder(nn.Module):
             in_mv_channels=cfg_enc["in_mv_channels"],
             out_mv_channels=cfg_enc["out_mv_channels"],
             dropout=cfg_enc["dropout"],
-            out_s_channels=cfg_enc["out_s_channels"]
+            out_s_channels=cfg_enc["out_s_channels"],
+            mv_embedding_mode=cfg_enc.get("mv_embedding_mode", "single"),
         )
         self.cfg_agg = cfg_agg
         self.compressor = nn.Linear(cfg_enc["out_s_channels"] + 16, latent_s_channels) # Compress concatenated latent mv and scalar to a smaller latent space
@@ -66,9 +70,28 @@ class GATrAutoencoder(nn.Module):
             head_in = out_mv_channels * 16 + out_s_channels
 
         projector_in = latent_s_channels + head_in
+        # LayerNorm antes de los proyectores: evita que escalas distintas entre la parte local
+        # (latent_compressed, 2D) y la parte global (aggregate_latent, 80D) creen gradientes
+        # asimétricos para x, y, z.
+        self.proj_norm = nn.LayerNorm(projector_in)
         self.coord_projector = nn.Linear(projector_in, 4)
         self.scalar_projector = nn.Linear(projector_in, cfg_dec["in_s_channels"])
+
+        # Cabeza VAE opcional sobre aggregate_latent para estructurar el espacio de clustering.
+        # No requiere etiquetas: regulariza el espacio hacia N(0,I) mediante pérdida KL.
+        if use_vae:
+            self.vae_norm   = nn.LayerNorm(head_in)
+            self.vae_mu     = nn.Linear(head_in, event_embed_dim)
+            self.vae_logvar = nn.Linear(head_in, event_embed_dim)
+        else:
+            self.vae_norm = self.vae_mu = self.vae_logvar = None
             
+    @staticmethod
+    def _reparameterize(mu, log_var):
+        """Reparameterization trick: mu + eps * std, con eps ~ N(0,I)."""
+        std = torch.exp(0.5 * log_var)
+        return mu + torch.randn_like(std) * std
+
     def encode(self, mv_v_part, mv_s_part, scalars, batch):
         mv_latent, s_latent, point_latent, scalar_latent = self.encoder(
             mv_v_part=mv_v_part,
@@ -125,8 +148,23 @@ class GATrAutoencoder(nn.Module):
                 raise ValueError(f"Aggregation type not supported: {agg_type}")
 
             aggregate_latent = torch.cat([mv_latent_agg, s_latent_agg], dim=-1)  # (B, out_mv_channels*16 + out_s_channels)
-        # OPCIONAL
-        # SE PODRÍA PONER OTRA CAPA LINEAL PARA PROYECTAR A OTRO ESPACIO
+        #----------------------------------------------
+        #------------- VAE HEAD (clustering) ----------
+        #----------------------------------------------
+        # Opcional: estructura el aggregate_latent para clustering sin etiquetas.
+        # Con use_vae=False, event_embedding = aggregate_latent (sin cambios).
+        if self.use_vae:
+            h = self.vae_norm(aggregate_latent)
+            embed_mu     = self.vae_mu(h)       # (B, event_embed_dim)
+            embed_logvar = self.vae_logvar(h)   # (B, event_embed_dim)
+            if self.training:
+                event_embedding = self._reparameterize(embed_mu, embed_logvar)
+            else:
+                event_embedding = embed_mu      # determinístico en eval
+        else:
+            event_embedding = aggregate_latent  # (B, head_in) — usar directamente para clustering
+            embed_mu = embed_logvar = None
+
         #----------------------------------------------
         #------------- DECODER INPUT PREPARATION ------
         #----------------------------------------------
@@ -139,14 +177,15 @@ class GATrAutoencoder(nn.Module):
             mv_latent_agg_expanded = mv_latent_agg[batch] # (N, 16)
             s_latent_agg_expanded = s_latent_agg[batch] # (N, F_s)
             latent_full_repr = torch.cat([latent_compressed, s_latent_agg_expanded, mv_latent_agg_expanded], dim=-1) # (B, latent_s_channels + F_s + 16)
-            
-        
-        
-        # project to 3D coordinates for decoding  
-        mv_latent_agg_projected = self.coord_projector(latent_full_repr)
-        
-        # project to s_in dimension for decoding  
-        s_latent_agg_projected = self.scalar_projector(latent_full_repr)
+
+        # LayerNorm antes de proyectar: iguala escalas entre latent_compressed (2D) y aggregate (80D)
+        latent_full_repr_normed = self.proj_norm(latent_full_repr)
+
+        # project to 3D coordinates for decoding
+        mv_latent_agg_projected = self.coord_projector(latent_full_repr_normed)
+
+        # project to s_in dimension for decoding
+        s_latent_agg_projected = self.scalar_projector(latent_full_repr_normed)
         
         
         mv_rec, s_rec, point_rec, scalar_rec = self.decode(
@@ -154,13 +193,16 @@ class GATrAutoencoder(nn.Module):
         )
 
         return {
-            "mv_latent": mv_latent, # (N, 1, 16)
-            "s_latent": s_latent, # (N, 1, F_s)
-            "point_latent": point_latent, # (N, 3)
-            "scalar_latent": scalar_latent, # (N, 1)
-            "aggregate_latent": aggregate_latent, # (B, 16 + F_s)
+            "mv_latent": mv_latent,          # (N, 1, 16)
+            "s_latent": s_latent,            # (N, 1, F_s)
+            "point_latent": point_latent,    # (N, 3)
+            "scalar_latent": scalar_latent,  # (N, 1)
+            "aggregate_latent": aggregate_latent,  # (B, head_in) — candidato principal para clustering
+            "event_embedding": event_embedding,    # (B, event_embed_dim) si VAE, else = aggregate_latent
+            "embed_mu": embed_mu,            # (B, event_embed_dim) o None si use_vae=False
+            "embed_logvar": embed_logvar,    # (B, event_embed_dim) o None si use_vae=False
             "mv_rec": mv_rec,
-            "s_rec": s_rec, # the rest of the variables of the hit
-            "point_rec": point_rec, # coordinate of the detector
-            "scalar_rec": scalar_rec, # layer of the detector (for example)
+            "s_rec": s_rec,                  # the rest of the variables of the hit
+            "point_rec": point_rec,          # coordinate of the detector
+            "scalar_rec": scalar_rec,        # layer of the detector (for example)
         }

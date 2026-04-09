@@ -1,0 +1,18 @@
+=== Resumen de evaluación ===
+
+Checkpoint : /nfs/cms/arqolmo/SDHCAL_Energy/GATrAutoencoder/checkpoints_vae_sim/checkpoint_latest.pt
+Config     : /nfs/cms/arqolmo/SDHCAL_Energy/GATrAutoencoder/config/model_cfg.yml
+
+N eventos  : 13682
+  electron  : 5000 eventos
+  pion      : 3780 eventos
+  muon      : 4902 eventos
+
+Métricas de reconstrucción (MSE):
+  mse_x: 0.069870
+  mse_y: 0.070278
+  mse_z: 0.092600
+  mse_k: 0.091693
+  mse_thr: 0.019061
+
+Per-event MSE (XYZ): mean=0.249856, median=0.225087, p95=0.479992
