@@ -903,8 +903,20 @@ def plot_pca_grid(z2d, event_hits, labels, loaders_with_labels, n_grid, output_d
 # Hook de clustering / clasificación
 # ============================================================
 
+def _compute_pca3d(embeddings):
+    """Proyección PCA 3D de los embeddings. Devuelve array (N,3) o None si sklearn no está."""
+    if len(embeddings) < 4:
+        return None
+    try:
+        from sklearn.decomposition import PCA
+    except ImportError:
+        return None
+    return PCA(n_components=3).fit_transform(embeddings)
+
+
 def apply_latent_algorithm(embeddings, labels, label_names=None,
-                            algorithm=None, mode="clustering"):
+                            algorithm=None, mode="clustering",
+                            output_dir=None, z2d=None, z3d=None):
     """
     Hook para aplicar algoritmos de sklearn (u otras librerías compatibles)
     sobre el espacio latente del autoencoder.
@@ -916,6 +928,9 @@ def apply_latent_algorithm(embeddings, labels, label_names=None,
         algorithm   objeto sklearn     — ej. KMeans(3), SVC(), RandomForestClassifier()
                     Si None, imprime ayuda y retorna vacío sin hacer nada.
         mode        str                — "clustering" o "classification"
+        output_dir  str o None         — si se proporciona, guarda CSV y plots de predicciones
+        z2d         np.ndarray (N,2)   — proyección 2D (PCA/t-SNE/UMAP) para scatter plots
+        z3d         np.ndarray (N,3)   — proyección 3D para scatter plots
 
     Returns:
         dict:
@@ -923,17 +938,20 @@ def apply_latent_algorithm(embeddings, labels, label_names=None,
             metrics           — dict con métricas (ARI/NMI para clustering;
                                 accuracy + classification_report para clasificación)
             algorithm_fitted  — el objeto sklearn ya ajustado, o None
+            test_indices      — índices del subset de test (solo en clasificación), o None
 
     Ejemplos de uso:
         # Clustering
         from sklearn.cluster import KMeans
         res = apply_latent_algorithm(embeddings, labels, algorithm=KMeans(n_clusters=3),
-                                     mode="clustering")
+                                     mode="clustering", output_dir="eval_output/",
+                                     z2d=z2d, z3d=z3d)
 
         # Clasificación
         from sklearn.svm import SVC
         res = apply_latent_algorithm(embeddings, labels, algorithm=SVC(kernel="rbf"),
-                                     mode="classification")
+                                     mode="classification", output_dir="eval_output/",
+                                     z2d=z2d, z3d=z3d)
 
         # UMAP + HDBSCAN (librerías externas)
         import umap, hdbscan
@@ -949,12 +967,16 @@ def apply_latent_algorithm(embeddings, labels, label_names=None,
     if algorithm is None:
         _log("[apply_latent_algorithm] No se ha proporcionado ningún algoritmo.")
         _log("  Modo clustering:      from sklearn.cluster import KMeans")
-        _log("                        apply_latent_algorithm(emb, labels, algorithm=KMeans(3), mode='clustering')")
+        _log("                        apply_latent_algorithm(emb, labels, algorithm=KMeans(3), mode='clustering',")
+        _log("                                               output_dir=output_dir, z2d=z2d, z3d=z3d)")
         _log("  Modo clasificación:   from sklearn.svm import SVC")
-        _log("                        apply_latent_algorithm(emb, labels, algorithm=SVC(), mode='classification')")
-        return {"predictions": None, "metrics": {}, "algorithm_fitted": None}
+        _log("                        apply_latent_algorithm(emb, labels, algorithm=SVC(), mode='classification',")
+        _log("                                               output_dir=output_dir, z2d=z2d, z3d=z3d)")
+        return {"predictions": None, "metrics": {}, "algorithm_fitted": None, "test_indices": None}
 
     _log(f"[apply_latent_algorithm] mode={mode!r}, algorithm={algorithm.__class__.__name__}")
+
+    test_indices = None
 
     if mode == "clustering":
         algorithm.fit(embeddings)
@@ -974,12 +996,14 @@ def apply_latent_algorithm(embeddings, labels, label_names=None,
         from sklearn.metrics import classification_report, accuracy_score
         uniq = np.unique(labels)
         can_stratify = all(np.sum(labels == li) >= 2 for li in uniq)
-        X_tr, X_te, y_tr, y_te = train_test_split(
-            embeddings, labels, test_size=0.3,
+        all_idx = np.arange(len(embeddings))
+        idx_tr, idx_te, X_tr, X_te, y_tr, y_te = train_test_split(
+            all_idx, embeddings, labels, test_size=0.3,
             random_state=42, stratify=(labels if can_stratify else None),
         )
         algorithm.fit(X_tr, y_tr)
         predictions = algorithm.predict(X_te)
+        test_indices = idx_te
         names_present = [
             LABEL_INT_TO_NAME.get(int(li), f"class_{li}") for li in uniq
         ]
@@ -994,7 +1018,69 @@ def apply_latent_algorithm(embeddings, labels, label_names=None,
     else:
         raise ValueError(f"mode debe ser 'clustering' o 'classification', recibido: {mode!r}")
 
-    return {"predictions": predictions, "metrics": metrics, "algorithm_fitted": algorithm}
+    # ---- Guardar CSV y plots si se proporcionó output_dir ----
+    if output_dir is not None:
+        algo_name = algorithm.__class__.__name__
+        prefix = f"{mode}_{algo_name}"
+
+        # CSV de predicciones
+        csv_path = os.path.join(output_dir, f"{prefix}_predictions.csv")
+        if mode == "clustering":
+            rows = [("event_id", "true_label", "prediction")]
+            for i, (tl, pred) in enumerate(zip(labels, predictions)):
+                rows.append((i, int(tl), int(pred)))
+        else:  # classification: solo test set tiene predicción
+            split_arr = np.full(len(labels), "train", dtype=object)
+            pred_arr  = np.full(len(labels), -1, dtype=np.int32)
+            split_arr[test_indices] = "test"
+            pred_arr[test_indices]  = predictions
+            rows = [("event_id", "true_label", "prediction", "split")]
+            for i, (tl, pred, sp) in enumerate(zip(labels, pred_arr, split_arr)):
+                rows.append((i, int(tl), int(pred), sp))
+        with open(csv_path, "w") as f:
+            for row in rows:
+                f.write(",".join(str(x) for x in row) + "\n")
+        _log(f"  Predicciones guardadas: {csv_path}")
+
+        # Plots scatter 2D y 3D coloreados por predicción
+        if plt is not None:
+            if mode == "clustering":
+                cluster_ids = np.unique(predictions)
+                pred_classes = [(int(ci), f"cluster_{ci}", COLORS[int(ci) % len(COLORS)])
+                                for ci in cluster_ids]
+                plot_labels = predictions
+                plot_z2d = z2d
+                plot_z3d = z3d
+            else:
+                uniq_preds = np.unique(predictions)
+                pred_classes = [
+                    (int(li), LABEL_INT_TO_NAME.get(int(li), f"class_{li}"),
+                     COLORS[int(li) % len(COLORS)])
+                    for li in uniq_preds
+                ]
+                plot_labels = predictions
+                plot_z2d = z2d[test_indices] if z2d is not None else None
+                plot_z3d = z3d[test_indices] if z3d is not None else None
+
+            if plot_z2d is not None:
+                _plot_scatter_2d(
+                    plot_z2d, plot_labels, pred_classes,
+                    axis_labels=["PC1", "PC2"],
+                    title=f"Predicciones {algo_name} ({mode}) — 2D",
+                    output_dir=output_dir,
+                    filename=f"{prefix}_preds_2d.png",
+                )
+            if plot_z3d is not None:
+                _plot_scatter_3d(
+                    plot_z3d, plot_labels, pred_classes,
+                    axis_labels=["PC1", "PC2", "PC3"],
+                    title=f"Predicciones {algo_name} ({mode}) — 3D",
+                    output_dir=output_dir,
+                    filename_base=f"{prefix}_preds_3d",
+                )
+
+    return {"predictions": predictions, "metrics": metrics,
+            "algorithm_fitted": algorithm, "test_indices": test_indices}
 
 
 # ============================================================
@@ -1078,6 +1164,7 @@ def main():
     plot_pca_3d(embeddings, labels, loaders_with_labels, args.output_dir,
                 energies=energies)
 
+    z2d = None
     if pca_result is not None:
         z2d, _ = pca_result
         _log(f"Generando PCA grid ({args.n_grid}×{args.n_grid})...")
@@ -1108,7 +1195,11 @@ def main():
     )
 
     # ---- Hook de clustering / clasificación ----
-    apply_latent_algorithm(embeddings, labels)
+    # Pasa output_dir, z2d y z3d para que, cuando se llame con un algoritmo,
+    # se guarden automáticamente el CSV de predicciones y los plots 2D/3D.
+    z3d = _compute_pca3d(embeddings)
+    apply_latent_algorithm(embeddings, labels,
+                           output_dir=args.output_dir, z2d=z2d, z3d=z3d)
 
     # ---- Resumen de métricas ----
     summary_path = os.path.join(args.output_dir, "metrics_summary.txt")
