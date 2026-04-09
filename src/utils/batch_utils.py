@@ -40,8 +40,8 @@ def build_batch(batch, use_scalar=False, use_energy=False, use_one_hot=False, us
      
         if use_energy and hasattr(batch, "energy"):
             logenergy = batch.energy.view(-1, 1)
-            if use_log:
-                logenergy = torch.log(logenergy + 1e-6)  # Evitar log(0)
+            # if use_log:
+            #     logenergy = torch.log(logenergy + 1e-6)  # Evitar log(0)
         else:
             logenergy = None
             

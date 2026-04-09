@@ -1,0 +1,82 @@
+# Configuration for GATrARAutoencoder
+# Autoregressive autoencoder with VAE latent space and Hungarian loss.
+#
+# Training phases:
+#   Phase 1 (0 .. pretrain_n_epochs-1): encoder + agg + VAE + head N only
+#       Loss: loss_n + beta_kl * loss_kl
+#   Phase 2 (pretrain_n_epochs .. max_epochs-1): all modules trainable
+#       Loss: lambda_hungarian * loss_h + lambda_n * loss_n + beta_kl * loss_kl
+
+encoder:
+  hidden_mv_channels: 32
+  hidden_s_channels: 512
+  num_blocks: 6
+  in_s_channels: 1          # 1 for scalar thr; 3 if --use_one_hot; +1 if --use_time
+  in_mv_channels: 2         # centroid mode (absolute + relative-to-centroid)
+  out_mv_channels: 1
+  out_s_channels: 128
+  dropout: 0.1
+  post_dropout: 0.0
+  mv_embedding_mode: "centroid"
+
+aggregation:
+  type: "attention"
+  num_seeds: 1
+  num_heads: 4
+  dropout: 0.0
+
+# Head N: predicts log(N_hits + 1)
+n_head:
+  hidden_dims: [256, 128]
+  activation: "relu"
+  layernorm: true
+  dropout: 0.0
+
+# Decoder: autoregressive GATr (single-mode, no centroid)
+decoder:
+  hidden_mv_channels: 32
+  hidden_s_channels: 256
+  num_blocks: 4
+  in_s_channels: 128        # fed from seed_proj_s / output_to_input_proj
+  in_mv_channels: 1
+  out_mv_channels: 1
+  out_s_channels: 64
+  dropout: 0.0
+  mv_embedding_mode: "single"
+
+# VAE head on top of aggregate_latent.
+# event_embedding ~ N(mu, exp(logvar)) during training, = mu at eval.
+# Enables unsupervised clustering via the latent space.
+vae:
+  use_vae: true
+  event_embed_dim: 64       # dimension of the clustering-ready latent space
+  beta_kl: 0.001            # KL weight; active in both training phases
+
+training:
+  d_step: 4                 # hits generated per autoregressive forward pass
+  pretrain_n_epochs: 10     # epochs for phase 1 (head N + VAE pre-training)
+  lambda_hungarian: 1.0     # weight for Hungarian set-matching loss (phase 2)
+  lambda_n: 0.1             # weight for head N loss (both phases)
+  scheduled_sampling_T: 20  # epochs to linearly transition n_steps from GT→predicted (0 = always GT)
+  hungarian_weights:
+    w_xyz: 1.0              # weight for (x,y,z) coordinates in cost/loss
+    w_k: 0.5                # weight for depth k (set to 0 if --use_scalar not used)
+    w_thr: 0.5              # weight for threshold feature
+
+scheduler:
+  warmup_pct: 0.1
+  warmup_start_factor: 0.1
+  type: "cosine"
+  lr_min: 0.000001
+  interval: "step"
+
+optimizer:
+  weight_decay: 0.0001
+  lr: 0.001
+  ema: true
+  ema_decay: 0.999
+
+debug:
+  debug_grad_step: 500
+  debug_event_step: 500
+  gradients_log_step: 100

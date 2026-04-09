@@ -1,0 +1,101 @@
+# Configuration for GATrClassifierRegressor
+#
+# Architecture:
+#   GATr encoder → aggregation → clf_head → concat(agg, class_probs) → energy_head
+#   (or MoE: sum_k(class_probs_k * expert_k(agg)))
+#
+# Training phases:
+#   Phase 1 (0 .. phase1_epochs-1): encoder + agg + clf_head only
+#       Loss: alpha_cls * CE(logits, bin_labels) + alpha_lb * KL_load_balance
+#   Phase 2 (phase1_epochs .. max_epochs-1): all modules trainable
+#       Loss: loss_reg + alpha_cls * CE + alpha_lb * KL_load_balance
+#       Gumbel-Softmax annealing activates in this phase (if gumbel_softmax: true)
+
+encoder:
+  hidden_mv_channels: 32
+  hidden_s_channels: 512
+  num_blocks: 6
+  in_s_channels: 1          # 1 for raw thr; 3 if --use_one_hot; +1 if --use_time
+  in_mv_channels: 2         # centroid mode (absolute + relative-to-centroid)
+  out_mv_channels: 1
+  out_s_channels: 128
+  dropout: 0.1
+  post_dropout: 0.0
+  mv_embedding_mode: "centroid"
+
+aggregation:
+  type: "attention"
+  num_heads: 4
+  num_seeds: 1
+  dropout: 0.0
+  use_nhits_features: true
+  nhits_mode: "per_threshold"   # log(n_thr1+1), log(n_thr2+1), log(n_thr3+1)
+
+  # Classification head: D_agg → hidden_dim → n_bins
+  clf_head:
+    hidden_dim: 128
+    activation: "gelu"
+    layernorm: true
+    dropout: 0.3            # was 0.1 — más regularización para reducir overfitting
+
+  # Regression head (concat mode): D_agg + n_bins → energy
+  # (ignored when clf.use_moe: true)
+  energy_head:
+    hidden_dims: [256, 128, 64]
+    activation: "gelu"
+    layernorm: true
+    dropout: 0.1
+
+# Classification and binning parameters
+clf:
+  n_bins: 10                 # was 20 — 10 GeV/bin, separable dado la resolución del SDHCAL
+  energy_min_gev: 0.0
+  energy_max_gev: 100.0
+  alpha_cls: 0.5             # was 0.15 — señal de clasificación competitiva en ambas fases
+  alpha_lb: 0.01             # was 0.0 — re-activado con valor pequeño para frenar routing collapse
+  label_smoothing: 0.1       # nuevo — regulariza CE para reducir overfitting del clf
+
+  # Gumbel-Softmax: deshabilitado en modo concat (use_moe: false)
+  gumbel_softmax: false
+  tau_start: 1.0
+  tau_end: 0.1
+  tau_anneal_epochs: 50
+
+  # Modo concat: concat([agg_features, class_probs]) → energy_head MLP
+  # MoE deshabilitado: routing soft con 20 bins daba 40.8% accuracy → no especializa
+  use_moe: true
+  expert_hidden_dims: [256, 128, 64]
+  expert_output_clamp: [-2, 8]    # log-energy range (5-100 GeV) ≈ [1.6, 4.6]; margen amplio
+
+# Two-phase training control
+training:
+  phase1_epochs: 50          # was 25 — más tiempo para que el clasificador converja
+  early_stopping_patience: 60  # was 30 — no cortar en el valley de transición de fase
+  reg_ramp_epochs: 10        # epochs de Fase 2 durante los que loss_reg crece linealmente 0→1
+
+scheduler:
+  interval: "step"
+  # Scheduler bifásico: warmup+cosine independiente por fase.
+  # Si se eliminan phase1/phase2, se usa el schedule legacy de arriba (backward compat).
+  phase1:
+    warmup_pct: 0.1            # 10% de los steps de Fase 1 para warmup lineal
+    warmup_start_factor: 0.1   # LR inicial = lr * 0.1
+    lr_min: 0.0001             # LR mínima al final del cosine de Fase 1
+  phase2:
+    warmup_pct: 0.05           # 5% de los steps de Fase 2 para warmup lineal
+    warmup_start_factor: 0.1   # LR inicial de Fase 2 = lr * lr_max_factor * 0.1
+    lr_max_factor: 0.3         # pico de LR en Fase 2 = lr * 0.3 (más conservador)
+    lr_min: 0.00001            # LR mínima al final del cosine de Fase 2
+
+optimizer:
+  weight_decay: 0.0001
+  lr: 0.001
+  loss_type: "huber"
+  huber_delta: 1.0
+  ema: true
+  ema_decay: 0.999
+
+debug:
+  debug_grad_step: 500
+  debug_event_step: 500
+  gradients_log_step: 100

@@ -32,3 +32,6 @@ wandb/
 *.ckpt
 gatr_autoencoder_graph
 *.json
+*html
+CLAUDE.md
+.claude

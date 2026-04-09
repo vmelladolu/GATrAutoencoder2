@@ -29,20 +29,57 @@ import yaml
 from utils.batch_utils import build_batch
 
 
-def reconstruction_loss(outputs, mv_v_part, mv_s_part, scalars, use_scalar=False):
-        point_rec = outputs["point_rec"]
-        scalar_rec = outputs["scalar_rec"]
-        s_rec = outputs["s_rec"]
+def reconstruction_loss(
+    outputs, mv_v_part, mv_s_part, scalars,
+    use_scalar=False,
+    coord_weights=(1.0, 1.0, 1.0),
+    scalar_weight=1.0,
+    thr_weight=1.0,
+    lambda_balance=0.0,
+    beta_kl=0.0,
+):
+    """Pérdida de reconstrucción con diagnóstico por coordenada y términos opcionales.
 
-        loss_xyz = nn.functional.mse_loss(point_rec, mv_v_part)
-        if use_scalar:
-            loss_depth = nn.functional.mse_loss(scalar_rec, mv_s_part)
-        else:
-            loss_depth = 0.0
-        
-        scalar_loss = nn.functional.mse_loss(s_rec, scalars)
+    Retorna:
+        total (Tensor): Pérdida total a propagar.
+        components (dict): Componentes individuales para logging (sin gradiente).
+    """
+    point_rec    = outputs["point_rec"]
+    scalar_rec   = outputs["scalar_rec"]
+    s_rec        = outputs["s_rec"]
+    embed_mu     = outputs.get("embed_mu")
+    embed_logvar = outputs.get("embed_logvar")
 
-        return loss_xyz + loss_depth + scalar_loss
+    wx, wy, wz = coord_weights
+    F = nn.functional.mse_loss
+    loss_x = F(point_rec[:, 0], mv_v_part[:, 0])
+    loss_y = F(point_rec[:, 1], mv_v_part[:, 1])
+    loss_z = F(point_rec[:, 2], mv_v_part[:, 2])
+    loss_xyz = wx * loss_x + wy * loss_y + wz * loss_z
+
+    # Término de balance: penaliza que una coordenada tenga error mucho mayor que las otras.
+    # std([loss_x, loss_y, loss_z]) es diferenciable y empuja las tres losses a igualarse.
+    loss_balance = lambda_balance * torch.std(torch.stack([loss_x, loss_y, loss_z]))
+
+    loss_depth = scalar_weight * F(scalar_rec, mv_s_part) if use_scalar else 0.0
+    loss_thr   = thr_weight * F(s_rec, scalars)
+
+    # Término KL (solo si use_vae=True y la cabeza VAE está activa)
+    loss_kl = 0.0
+    if beta_kl > 0.0 and embed_logvar is not None and embed_mu is not None:
+        loss_kl = beta_kl * (-0.5 * torch.mean(
+            1 + embed_logvar - embed_mu.pow(2) - embed_logvar.exp()
+        ))
+
+    total = loss_xyz + loss_balance + loss_depth + loss_thr + loss_kl
+    components = {
+        "loss_x":       loss_x.item(),
+        "loss_y":       loss_y.item(),
+        "loss_z":       loss_z.item(),
+        "loss_balance": loss_balance.item() if isinstance(loss_balance, torch.Tensor) else float(loss_balance),
+        "loss_kl":      loss_kl.item() if isinstance(loss_kl, torch.Tensor) else float(loss_kl),
+    }
+    return total, components
 
 
 def _plot_event_3d(xyz, xyz_rec):
@@ -86,25 +123,43 @@ def _plot_error_distributions(r_err_x, r_err_y, r_err_z, r_err_depth, r_err_thr,
 
 
 def _plot_event_projections(xyz, xyz_rec):
-        if plt is None:
-            return None
-        fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-        axes[0].scatter(xyz[:, 0], xyz[:, 2], s=3, alpha=0.6, label="orig")
-        axes[0].scatter(xyz_rec[:, 0], xyz_rec[:, 2], s=3, alpha=0.6, label="rec")
-        axes[0].set_title("XZ")
-        axes[0].set_xlabel("x")
-        axes[0].set_ylabel("z")
-        axes[0].legend()
+    if plt is None:
+        return None
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+    pairs = [
+        (0, 2, "XZ", "x", "z"),
+        (1, 2, "YZ", "y", "z"),
+        (0, 1, "XY", "x", "y"),  # Vista transversal: revela pérdida de forma lateral del shower
+    ]
+    for ax, (i, j, title, xl, yl) in zip(axes, pairs):
+        ax.scatter(xyz[:, i], xyz[:, j], s=3, alpha=0.6, label="orig")
+        ax.scatter(xyz_rec[:, i], xyz_rec[:, j], s=3, alpha=0.6, label="rec")
+        ax.set_title(title)
+        ax.set_xlabel(xl)
+        ax.set_ylabel(yl)
+        ax.legend()
+    fig.tight_layout()
+    return fig
 
-        axes[1].scatter(xyz[:, 1], xyz[:, 2], s=3, alpha=0.6, label="orig")
-        axes[1].scatter(xyz_rec[:, 1], xyz_rec[:, 2], s=3, alpha=0.6, label="rec")
-        axes[1].set_title("YZ")
-        axes[1].set_xlabel("y")
-        axes[1].set_ylabel("z")
-        axes[1].legend()
 
-        fig.tight_layout()
-        return fig
+def _plot_embedding_pca(embeddings_np):
+    """PCA 2D del aggregate_latent para monitorear estructura de clustering por época."""
+    if plt is None or embeddings_np.shape[0] < 4:
+        return None
+    try:
+        from sklearn.decomposition import PCA
+    except ImportError:
+        return None
+    pca = PCA(n_components=2)
+    z2d = pca.fit_transform(embeddings_np)
+    var = pca.explained_variance_ratio_
+    fig, ax = plt.subplots(figsize=(6, 5))
+    ax.scatter(z2d[:, 0], z2d[:, 1], s=10, alpha=0.6)
+    ax.set_xlabel(f"PC1 ({var[0]*100:.1f}%)")
+    ax.set_ylabel(f"PC2 ({var[1]*100:.1f}%)")
+    ax.set_title("event_embedding — PCA 2D")
+    fig.tight_layout()
+    return fig
 
 
 def test_forward_on_gpu(model, cfg_enc, device):
@@ -350,8 +405,25 @@ def main():
     if args.device is not None:
         device = torch.device(args.device)
         _log(f"Usando dispositivo especificado: {device}")
+    cfg_latent        = cfg_models.get("latent", {})
+    use_vae           = cfg_latent.get("use_vae", False)
+    event_embed_dim   = cfg_latent.get("event_embed_dim", 32)
+    beta_kl           = cfg_latent.get("beta_kl", 0.001)
+    _tcfg             = cfg_models.get("training", {})
+    coord_weights     = tuple(_tcfg.get("loss_coord_weights", [1.0, 1.0, 1.0]))
+    lambda_balance    = _tcfg.get("lambda_balance", 0.0)
+    scalar_weight     = _tcfg.get("loss_scalar_weight", 1.0)
+    thr_weight        = _tcfg.get("loss_thr_weight", 1.0)
+
     _log("Construyendo modelo...")
-    model = GATrAutoencoder(cfg_enc=cfg_enc, cfg_agg=cfg_agg, cfg_dec=cfg_dec, latent_s_channels=2)
+    model = GATrAutoencoder(
+        cfg_enc=cfg_enc,
+        cfg_agg=cfg_agg,
+        cfg_dec=cfg_dec,
+        latent_s_channels=2,
+        use_vae=use_vae,
+        event_embed_dim=event_embed_dim,
+    )
     model.to(device)
     _log(f"Modelo listo ({sum(p.numel() for p in model.parameters()):,} parámetros)")
 
@@ -398,6 +470,11 @@ def main():
                 "cfg_dec": cfg_dec,
                 "cfg_agg": cfg_agg,
                 "latent_s_channels": 2,
+                "use_vae": use_vae,
+                "event_embed_dim": event_embed_dim,
+                "beta_kl": beta_kl,
+                "coord_weights": coord_weights,
+                "lambda_balance": lambda_balance,
                 "batch_size": args.batch_size,
                 "val_ratio": val_ratio,
                 "mode": mode,
@@ -420,6 +497,8 @@ def main():
         wandb.define_metric("global_step")
         wandb.define_metric("loss/train_batch", step_metric="global_step")
         wandb.define_metric("lr/step", step_metric="global_step")
+        wandb.define_metric("grad_norm", step_metric="global_step")
+        wandb.define_metric("loss_components/*", step_metric="global_step")
         wandb.define_metric("train/reco_projections", step_metric="global_step")
         wandb.define_metric("epoch")
         wandb.define_metric("loss/train", step_metric="epoch")
@@ -427,6 +506,7 @@ def main():
         wandb.define_metric("lr", step_metric="epoch")
         wandb.define_metric("relative_err/*", step_metric="epoch")
         wandb.define_metric("reco/*", step_metric="epoch")
+        wandb.define_metric("embedding/*", step_metric="epoch")
         wandb.log({"model/params": sum(p.numel() for p in model.parameters())})
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -469,13 +549,19 @@ def main():
             batch_idx = data["batch_idx"].to(device)
 
             outputs = model(mv_v_part, mv_s_part, scalars, batch_idx)
-            loss = reconstruction_loss(outputs, mv_v_part,
-                                       mv_s_part, scalars,
-                                       use_scalar=use_scalar,
-                                       )
+            loss, loss_components = reconstruction_loss(
+                outputs, mv_v_part, mv_s_part, scalars,
+                use_scalar=use_scalar,
+                coord_weights=coord_weights,
+                scalar_weight=scalar_weight,
+                thr_weight=thr_weight,
+                lambda_balance=lambda_balance,
+                beta_kl=beta_kl,
+            )
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
             total_loss += loss.item()
@@ -492,7 +578,13 @@ def main():
                 log_dict = {
                     "loss/train_batch": loss.item(),
                     "lr/step": optimizer.param_groups[0]["lr"],
+                    "grad_norm": grad_norm.item(),
                     "global_step": global_step,
+                    "loss_components/x":       loss_components["loss_x"],
+                    "loss_components/y":       loss_components["loss_y"],
+                    "loss_components/z":       loss_components["loss_z"],
+                    "loss_components/balance": loss_components["loss_balance"],
+                    "loss_components/kl":      loss_components["loss_kl"],
                 }
                 if plt is not None and args.plot_every > 0 and global_step % args.plot_every == 0:
                     point_rec_cpu = outputs["point_rec"].detach().cpu()
@@ -519,6 +611,7 @@ def main():
         val_loss = 0.0
         first_val_batch = None
         first_val_outputs = None
+        all_val_latents = []  # Para PCA del aggregate_latent al final de la época
         t_val = time.time()
         with torch.no_grad():
             for val_batch_num, batch in enumerate(val_loader):
@@ -531,14 +624,19 @@ def main():
                 batch_idx = data["batch_idx"].to(device)
 
                 outputs = model(mv_v_part, mv_s_part, scalars, batch_idx)
-                loss = reconstruction_loss(outputs,
-                                           mv_v_part,
-                                           mv_s_part,
-                                           scalars,
-                                           use_scalar=use_scalar,
-                                           )
+                loss, _ = reconstruction_loss(
+                    outputs, mv_v_part, mv_s_part, scalars,
+                    use_scalar=use_scalar,
+                    coord_weights=coord_weights,
+                    scalar_weight=scalar_weight,
+                    thr_weight=thr_weight,
+                    lambda_balance=lambda_balance,
+                    beta_kl=beta_kl,
+                )
 
                 val_loss += loss.item()
+                # event_embedding = embed_mu (VAE, 32D) o aggregate_latent (sin VAE, 80D)
+                all_val_latents.append(outputs["event_embedding"].detach().cpu())
 
                 if first_val_batch is None:
                     first_val_batch = {
@@ -617,6 +715,14 @@ def main():
                     if fig_err is not None:
                         wandb.log({"reco/error_distributions": wandb.Image(fig_err), "epoch": epoch})
                         plt.close(fig_err)
+
+        # PCA 2D del aggregate_latent de validación — monitorea estructura de clustering
+        if wandb is not None and plt is not None and all_val_latents:
+            lat_np = torch.cat(all_val_latents, dim=0).numpy()
+            fig_pca = _plot_embedding_pca(lat_np)
+            if fig_pca is not None:
+                wandb.log({"embedding/pca_2d": wandb.Image(fig_pca), "epoch": epoch})
+                plt.close(fig_pca)
 
 
 if __name__ == "__main__":

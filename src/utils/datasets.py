@@ -520,6 +520,173 @@ class FlatSDHCALDataset(Dataset):
 
 
 # ============================================================
+# Dataset multi-fichero plano (HDF5 / NPZ con offsets)
+# ============================================================
+
+class MultiFileFlatSDHCALDataset(FlatSDHCALDataset):
+    """
+    Fusiona varios ficheros planos (HDF5 o NPZ con offsets) en un único dataset.
+
+    Salta FlatSDHCALDataset.__init__ y construye los mismos atributos
+    concatenando los arrays de todos los ficheros. Al heredar de
+    FlatSDHCALDataset, isinstance() devuelve True y _apply_preprocessing_inplace,
+    get() y len() se heredan sin cambios.
+    """
+
+    def __init__(
+        self,
+        paths: List[str],
+        preprocessing_cfg: Optional[dict] = None,
+        filters: Optional[dict] = None,
+        use_weighted_loss: bool = False,
+    ):
+        # Inicializar solo el Dataset base (saltar FlatSDHCALDataset.__init__)
+        Dataset.__init__(self)
+        self._preprocessing_cfg = preprocessing_cfg
+        self._stats = None
+        self._path = paths[0]  # usado para derivar el YAML de stats
+
+        xs, ys, zs, i_s, js, ks, thrs, times, energies = [], [], [], [], [], [], [], [], []
+        all_offsets: List[np.ndarray] = []
+        hit_offset = 0
+        all_event_data: dict = {}
+
+        for path in paths:
+            ext = os.path.splitext(path)[1].lower()
+            is_hdf5 = ext in [".h5", ".hdf5"]
+            print(f"[MultiFileFlatSDHCALDataset] Cargando: {path}")
+
+            if is_hdf5:
+                f = h5py.File(path, "r")
+                available = list(f.keys())
+            else:
+                f = np.load(path, allow_pickle=False)
+                available = list(f.files)
+
+            offsets_file = np.asarray(f["offsets"]).astype(np.int64)
+            if not all_offsets:
+                all_offsets.append(offsets_file)
+            else:
+                # Saltar el primer elemento (ya está como último del bloque anterior)
+                all_offsets.append(offsets_file[1:] + hit_offset)
+            hit_offset += int(offsets_file[-1])
+
+            def _load(key, req=True, _f=f, _available=available, _path=path):
+                if key in _available:
+                    return torch.from_numpy(np.asarray(_f[key]).astype(np.float32))
+                if req:
+                    raise KeyError(f"Falta '{key}' en {_path}")
+                return None
+
+            xs.append(_load("x"))
+            ys.append(_load("y"))
+            zs.append(_load("z"))
+            i_s.append(_load("i"))
+            js.append(_load("j"))
+            ks.append(_load("k"))
+            thrs.append(_load("thr"))
+            times.append(_load("time", req=False))
+            energies.append(_load("energy", req=False))
+
+            # Arrays event-level (para filtros)
+            for key in available:
+                if key not in FlatSDHCALDataset._HIT_KEYS:
+                    try:
+                        all_event_data.setdefault(key, []).append(np.asarray(f[key]))
+                    except Exception:
+                        pass
+
+            if is_hdf5:
+                f.close()
+
+        # Concatenar arrays hit-level
+        self._offsets = np.concatenate(all_offsets)
+        self._x   = torch.cat(xs)
+        self._y   = torch.cat(ys)
+        self._z   = torch.cat(zs)
+        self._i   = torch.cat(i_s)
+        self._j   = torch.cat(js)
+        self._k   = torch.cat(ks)
+        self._thr = torch.cat(thrs)
+
+        # time: concatenar solo si TODOS los ficheros lo tienen
+        if all(t is not None for t in times):
+            self._time = torch.cat(times)
+        else:
+            self._time = None
+
+        # energy: concatenar solo si TODOS los ficheros lo tienen
+        if all(e is not None for e in energies):
+            self._energy = torch.cat(energies)
+        else:
+            self._energy = None
+
+        # One-hot thresholds (antes de cualquier normalización)
+        self._thr1 = (self._thr == 1).float()
+        self._thr2 = (self._thr == 2).float()
+        self._thr3 = (self._thr == 3).float()
+
+        # Aplicar filtros sobre el dataset combinado
+        event_data = {k: np.concatenate(v) for k, v in all_event_data.items()}
+        n_events_total = len(self._offsets) - 1
+        self._event_indices = np.arange(n_events_total, dtype=np.int64)
+        self._n_events = n_events_total
+
+        if filters:
+            mask = _apply_filters_inmem(event_data, n_events_total, filters)
+            n_passed = int(mask.sum())
+            print(
+                f"[MultiFileFlatSDHCALDataset] Filtros aplicados: "
+                f"{n_passed}/{n_events_total} eventos pasan "
+                f"({100 * n_passed / max(1, n_events_total):.1f}%)"
+            )
+            self._event_indices = np.flatnonzero(mask).astype(np.int64)
+            self._n_events = int(self._event_indices.size)
+
+        # Class weights (igual que FlatSDHCALDataset)
+        if self._energy is not None and use_weighted_loss:
+            en_np = self._energy[self._event_indices].numpy()
+            unique_vals, counts = np.unique(en_np, return_counts=True)
+            n_unique = len(unique_vals)
+            n_total = len(en_np)
+            is_discrete = n_unique <= max(30, int(0.001 * n_total))
+            if is_discrete:
+                self.n_events_per_energy = {
+                    f"{float(v):g}": int(c) for v, c in zip(unique_vals, counts)
+                }
+                total = int(counts.sum())
+                self.weights = {k: total / v for k, v in self.n_events_per_energy.items()}
+                self.weights["__meta__"] = {"bin_half_width": 0.5, "type": "discrete"}
+            else:
+                bin_width = 5.0
+                e_min, e_max = float(en_np.min()), float(en_np.max())
+                bin_edges = np.arange(e_min, e_max + bin_width, bin_width)
+                hist_counts, _ = np.histogram(en_np, bins=bin_edges)
+                bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+                total = int(hist_counts.sum())
+                self.n_events_per_energy = {}
+                self.weights = {}
+                for center, count in zip(bin_centers, hist_counts):
+                    if count > 0:
+                        key = f"{float(center):g}"
+                        self.n_events_per_energy[key] = int(count)
+                        self.weights[key] = total / int(count)
+                self.weights["__meta__"] = {
+                    "bin_half_width": bin_width / 2.0,
+                    "type": "continuous",
+                    "bin_width": bin_width,
+                }
+        else:
+            self.weights = None
+            self.n_events_per_energy = None
+
+        print(
+            f"[MultiFileFlatSDHCALDataset] {len(paths)} ficheros fusionados. "
+            f"Eventos: {self._n_events}"
+        )
+
+
+# ============================================================
 # Dataset original (legacy, para npz jagged con pickle)
 # ============================================================
 
@@ -672,7 +839,37 @@ def make_pf_splits(
         else:
             dataset = HitsDataset(paths, mode=mode)
     else:
-        dataset = HitsDataset(paths, mode=mode)
+        # Comprobar si todos los ficheros son planos (tienen offsets)
+        all_flat = True
+        for p in paths:
+            ext = os.path.splitext(p)[1].lower()
+            try:
+                if ext in [".h5", ".hdf5"]:
+                    with h5py.File(p, "r") as probe:
+                        if "offsets" not in probe:
+                            all_flat = False
+                            break
+                elif ext == ".npz":
+                    probe = np.load(p, allow_pickle=False)
+                    if "offsets" not in probe:
+                        all_flat = False
+                        break
+                else:
+                    all_flat = False
+                    break
+            except Exception:
+                all_flat = False
+                break
+
+        if all_flat:
+            dataset = MultiFileFlatSDHCALDataset(
+                paths,
+                preprocessing_cfg=None,
+                filters=filters,
+                use_weighted_loss=use_weighted_loss,
+            )
+        else:
+            dataset = HitsDataset(paths, mode=mode)
 
     # ----------------------------------------------------------
     # Split
