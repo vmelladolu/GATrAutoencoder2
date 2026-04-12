@@ -1197,8 +1197,12 @@ def main():
     # ---- Hook de clustering / clasificación ----
     # Pasa output_dir, z2d y z3d para que, cuando se llame con un algoritmo,
     # se guarden automáticamente el CSV de predicciones y los plots 2D/3D.
+    from sklearn.cluster import KMeans
     z3d = _compute_pca3d(embeddings)
-    apply_latent_algorithm(embeddings, labels,
+
+    km = KMeans(n_clusters=3, random_state=0, n_init= "auto")
+
+    apply_latent_algorithm(embeddings, labels,algorithm=km,mode="clustering",
                            output_dir=args.output_dir, z2d=z2d, z3d=z3d)
 
     # ---- Resumen de métricas ----
