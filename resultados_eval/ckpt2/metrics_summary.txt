@@ -1,0 +1,16 @@
+=== Resumen de evaluación ===
+
+Checkpoint : /home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/checkpoint_latest.pt
+Config     : /home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/config/model_cfg.yml
+
+N eventos  : 134913
+  pion      : 134913 eventos
+
+Métricas de reconstrucción (MSE):
+  mse_x: 1.546749
+  mse_y: 1.811680
+  mse_z: 25.558577
+  mse_k: 1.890431
+  mse_thr: 0.301704
+
+Per-event MSE (XYZ): mean=28.356213, median=20.475541, p95=80.256134
