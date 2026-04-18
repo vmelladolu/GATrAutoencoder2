@@ -898,6 +898,107 @@ def plot_pca_grid(z2d, event_hits, labels, loaders_with_labels, n_grid, output_d
     plt.close(fig)
     _log(f"Guardado: {path}")
 
+# ============================================================
+# Pintar hits por cluster
+# ============================================================
+def plot_hits_by_cluster(event_hits, preds, output_dir):
+    if plt is None:
+        return
+
+    clusters = [cid for cid in np.unique(preds) if cid != -1]
+    n_clusters = len(clusters)
+
+    n_cols = 4
+    n_rows = int(np.ceil(n_clusters / n_cols))
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4*n_cols, 4*n_rows))
+    axes = axes.flatten()
+
+    for i, cid in enumerate(clusters):
+        idx = np.where(preds == cid)[0]
+        if len(idx) == 0:
+            continue
+
+        hits = np.concatenate([event_hits[j] for j in idx], axis=0)
+
+        ax = axes[i]
+        ax.scatter(hits[:,0], hits[:,2], s=1)
+        ax.set_title(f"C{cid} (n={len(idx)})")
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+    # quitar subplots vacíos
+    for j in range(i+1, len(axes)):
+        fig.delaxes(axes[j])
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "clusters_xz.png"))
+    plt.close()
+
+# ============================================================
+# Pintar perfiles de los clusters
+# ============================================================
+def plot_shower_profiles(event_hits, preds, output_dir):
+    if plt is None:
+        return
+
+    for cid in np.unique(preds):
+        if cid == -1:
+            continue
+
+        idx = np.where(preds == cid)[0]
+
+        longi = []
+        lat = []
+
+        for i in idx:
+            hits = event_hits[i]
+            if len(hits) == 0:
+                continue
+
+            longi.append(np.std(hits[:,2]))  # profundidad
+            lat.append(np.std(hits[:,0]))    # lateral (puedes añadir Y también)
+
+        if len(longi) == 0:
+            continue
+
+        # ---- HISTOGRAMA ----
+        fig, axes = plt.subplots(1, 2, figsize=(10,4))
+
+        axes[0].hist(longi, bins=50)
+        axes[0].set_title(f"Cluster {cid} - Longitudinal")
+        axes[0].set_xlabel("std(Z)")
+
+        axes[1].hist(lat, bins=50)
+        axes[1].set_title(f"Cluster {cid} - Lateral")
+        axes[1].set_xlabel("std(X)")
+
+        fig.suptitle(f"Cluster {cid} shower profiles (n={len(idx)})")
+
+        path = os.path.join(output_dir, f"cluster_{cid}_profiles.png")
+        fig.savefig(path)
+        plt.close(fig)
+
+# ============================================================
+# Plot del perfil lateral vs longitudinal
+# ============================================================
+def plot_lateral_vs_longitudinal(features, preds, output_dir):
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=(7,6))
+
+    for cid in np.unique(preds):
+        mask = preds == cid
+        plt.scatter(features[mask,1], features[mask,2],
+                    s=5, alpha=0.5, label=f"cluster {cid}")
+
+    plt.xlabel("Longitudinal")
+    plt.ylabel("Lateral")
+    plt.legend()
+    plt.title("Lateral vs Longitudinal por cluster")
+
+    plt.savefig(os.path.join(output_dir, "lateral_vs_longitudinal.png"))
+    plt.close()
 
 # ============================================================
 # Hook de clustering / clasificación
@@ -912,6 +1013,34 @@ def _compute_pca3d(embeddings):
     except ImportError:
         return None
     return PCA(n_components=3).fit_transform(embeddings)
+
+# ------- Calcular features------
+def compute_event_features(event_hits):
+    """
+    Calcula features físicas por evento:
+    - n_hits
+    - longitudinal (std en Z)
+    - lateral (spread en X,Y)
+    """
+    feats = []
+
+    for hits in event_hits:
+        if len(hits) == 0:
+            feats.append((0, 0, 0))
+            continue
+
+        n_hits = len(hits)
+
+        x = hits[:, 0]
+        y = hits[:, 1]
+        z = hits[:, 2]
+
+        longitudinal = np.std(z)
+        lateral = np.sqrt(np.var(x) + np.var(y))
+
+        feats.append((n_hits, longitudinal, lateral))
+
+    return np.array(feats)  # shape (N_events, 3)
 
 
 def apply_latent_algorithm(embeddings, labels, label_names=None,
@@ -1082,6 +1211,20 @@ def apply_latent_algorithm(embeddings, labels, label_names=None,
     return {"predictions": predictions, "metrics": metrics,
             "algorithm_fitted": algorithm, "test_indices": test_indices}
 
+# Ponemos un wrapper para que HDBSCAN imite .predict()
+
+class HDBSCANWrapper:
+    def __init__(self, **kwargs):
+        import hdbscan
+        self.model = hdbscan.HDBSCAN(**kwargs)
+
+    def fit(self,X):
+        self.labels_ = self.model.fit_predict(X)
+        return self
+
+    def predict(self,X):
+        return self.labels_
+
 
 # ============================================================
 # Main
@@ -1197,13 +1340,63 @@ def main():
     # ---- Hook de clustering / clasificación ----
     # Pasa output_dir, z2d y z3d para que, cuando se llame con un algoritmo,
     # se guarden automáticamente el CSV de predicciones y los plots 2D/3D.
-    from sklearn.cluster import KMeans
+    features = compute_event_features(results["event_hits"])
+
     z3d = _compute_pca3d(embeddings)
 
-    km = KMeans(n_clusters=3, random_state=0, n_init= "auto")
+    hdb = HDBSCANWrapper(min_cluster_size=20)
 
-    apply_latent_algorithm(embeddings, labels,algorithm=km,mode="clustering",
+    res = apply_latent_algorithm(embeddings, labels,algorithm=hdb,mode="clustering",
                            output_dir=args.output_dir, z2d=z2d, z3d=z3d)
+
+    preds= res["predictions"]
+
+    #------- Análisis de clusters-------
+    print("Clusters encontrados:", np.unique(preds))
+
+    for cid in np.unique(preds):
+        n = np.sum(preds == cid)
+        print(f"Cluster {cid}: {n} eventos")
+
+    plot_hits_by_cluster(results["event_hits"],preds, args.output_dir)
+    plot_shower_profiles(results["event_hits"], preds, args.output_dir)
+    plot_lateral_vs_longitudinal(features, preds, args.output_dir)
+    #------ Análisis de hits-------
+    for cid in np.unique(preds):
+        if cid == -1:
+            continue
+
+    idx= np.where(preds == cid)[0]
+    sizes = [len(results["event_hits"][i]) for i in idx]
+
+    print(f"Cluster {cid}: mean hits = {np.mean(sizes):.1f}, std= {np.std(sizes):.1f}")
+
+    #------- Forma del shower-------
+    for cid in np.unique(preds):
+        if cid == -1:
+            continue
+
+    idx = np.where(preds == cid)[0]
+
+    longi = []
+    lat = []
+
+    for i in idx:
+        hits = results["event_hits"][i]
+        if len(hits) == 0:
+            continue
+
+        longi.append(np.std(hits[:,2]))
+        lat.append(np.std(hits[:,0]))
+
+    print(f"Cluster {cid}: longitudinal={np.mean(longi):.2f}, lateral={np.mean(lat):.2f}")
+
+    #---------Eventos raros-------
+    threshold = np.percentile(per_event_mse, 95)
+    high_error_idx = np.where(per_event_mse > threshold)[0]
+
+    print("Eventos raros:", len(high_error_idx))
+    print("Clusters de eventos raros:", preds[high_error_idx])
 
     # ---- Resumen de métricas ----
     summary_path = os.path.join(args.output_dir, "metrics_summary.txt")
