@@ -5,6 +5,7 @@ import argparse
 import numpy as np
 import yaml
 import torch
+import pandas as pd
 from torch_geometric.loader import DataLoader
 
 from models.gatr_autoencoder import GATrAutoencoder
@@ -80,7 +81,7 @@ def parse_args():
                         help="Directorio donde guardar plots y métricas")
     parser.add_argument("--n_grid", type=int, default=8,
                         help="Resolución del grid para el plot PCA-grid (n_grid x n_grid)")
-
+    parser.add_argument( "--label-name",type=str,default="unknown", help="Particle label (electron, muon, pion)")
     # Reducción de dimensionalidad no lineal (t-SNE / UMAP)
     parser.add_argument("--max_reduction_events", type=int, default=5000,
                         help="Máx. eventos usados para t-SNE/UMAP (0 = todos; t-SNE es O(n²))")
@@ -90,7 +91,7 @@ def parse_args():
                         help="n_neighbors de UMAP")
     parser.add_argument("--umap_min_dist", type=float, default=0.1,
                         help="min_dist de UMAP")
-
+    parser.add_argument( "--dataset-name",type=str,default="unknown",help="Nombre del dataset (electron/pion/muon)")
     # Cargar defaults del YAML de training
     pre_args, _ = parser.parse_known_args()
     yaml_training = {}
@@ -979,6 +980,44 @@ def plot_shower_profiles(event_hits, preds, output_dir):
         fig.savefig(path)
         plt.close(fig)
 
+
+
+#--------- Plot de los clusters del gmm
+def plot_all_clusters(features, preds, output_dir, name="clusters_all.png"):
+    import os
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    if features.shape[1] < 2:
+        print("No se puede plotear en 2D")
+        return
+
+    fig, ax = plt.subplots(figsize=(6,6))
+
+    unique_clusters = np.unique(preds)
+
+    for cid in unique_clusters:
+        mask = preds == cid
+
+        if cid == -1:
+            # ruido en gris
+            ax.scatter(features[mask,0], features[mask,1],
+                       s=2, color='lightgray', label="noise")
+        else:
+            ax.scatter(features[mask,0], features[mask,1],
+                       s=5, label=f"C{cid}")
+
+    ax.set_title("Clusters (GMM)")
+    ax.legend(markerscale=3, fontsize=8)
+
+    path = os.path.join(output_dir, name)
+    fig.savefig(path, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+
+    print(f"Guardado: {path}")
+
+
+
 # ============================================================
 # Plot del perfil lateral vs longitudinal
 # ============================================================
@@ -989,7 +1028,7 @@ def plot_lateral_vs_longitudinal(features, preds, output_dir):
 
     for cid in np.unique(preds):
         mask = preds == cid
-        plt.scatter(features[mask,1], features[mask,2],
+        plt.scatter(features[mask,0], features[mask,1],
                     s=5, alpha=0.5, label=f"cluster {cid}")
 
     plt.xlabel("Longitudinal")
@@ -1225,6 +1264,28 @@ class HDBSCANWrapper:
     def predict(self,X):
         return self.labels_
 
+# ----------Guardamos features en un csv-----------
+def save_event_features(results, features, preds, output_dir,dataset_name,label_name):
+
+    mse = compute_per_event_mse(results)
+    n_events = features.shape[0]
+
+    df = pd.DataFrame({
+        "event_id": np.arange(n_events),
+        "cluster": preds,
+        "mse": mse,
+        "label":label_name
+    })
+
+    # embedding
+    for i in range(features.shape[1]):
+        df[f"f{i}"] = features[:, i]
+
+    path = os.path.join(output_dir, f"{dataset_name}_features.csv")
+    df.to_csv(path, index=False)
+
+    print(f"[OK] Guardado CSV: {path}")
+
 
 # ============================================================
 # Main
@@ -1340,17 +1401,37 @@ def main():
     # ---- Hook de clustering / clasificación ----
     # Pasa output_dir, z2d y z3d para que, cuando se llame con un algoritmo,
     # se guarden automáticamente el CSV de predicciones y los plots 2D/3D.
-    features = compute_event_features(results["event_hits"])
+    from sklearn.mixture import GaussianMixture
+    from sklearn.preprocessing import StandardScaler
 
-    z3d = _compute_pca3d(embeddings)
+    features = z2d if z2d is not None else embeddings
 
-    hdb = HDBSCANWrapper(min_cluster_size=20)
+    #Escalado
+    features_scaled= StandardScaler().fit_transform(features)
 
-    res = apply_latent_algorithm(embeddings, labels,algorithm=hdb,mode="clustering",
-                           output_dir=args.output_dir, z2d=z2d, z3d=z3d)
+    #------ Busqueda de k óptimo con BIC
+    ks=range(2,12)
+    bics=[]
 
-    preds= res["predictions"]
+    for k in ks:
+        gmm=GaussianMixture(n_components=k,covariance_type='full',random_state=42)
+        gmm.fit(features_scaled)
+        bics.append(gmm.bic(features_scaled))
 
+    best_k= ks[np.argmin(bics)]
+    print("Best number of clusters (BIC):",best_k)
+
+    #----- Modelo final----
+    gmm= GaussianMixture(n_components=best_k,covariance_type='full',random_state=42)
+    preds = gmm.fit_predict(features_scaled)
+    plot_all_clusters(features, preds, args.output_dir, "gmm_clusters_2d.png")
+    #---- Guardar plots
+    plt.plot(ks, bics, marker='o')
+    plt.xlabel("Number of clusters")
+    plt.ylabel("BIC")
+    plt.title("BIC vs number of clusters")
+    plt.savefig(os.path.join(args.output_dir, "bic_curve.png"))
+    plt.close()
     #------- Análisis de clusters-------
     print("Clusters encontrados:", np.unique(preds))
 
@@ -1397,6 +1478,12 @@ def main():
 
     print("Eventos raros:", len(high_error_idx))
     print("Clusters de eventos raros:", preds[high_error_idx])
+    # -----llamamos al guardar features---
+    features = z2d if z2d is not None else embeddings
+
+    save_event_features(results,features,preds,args.output_dir,args.dataset_name,args.label_name)
+
+
 
     # ---- Resumen de métricas ----
     summary_path = os.path.join(args.output_dir, "metrics_summary.txt")

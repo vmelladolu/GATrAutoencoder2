@@ -35,3 +35,14 @@ gatr_autoencoder_graph
 *html
 CLAUDE.md
 .claude
+# === EXCEPCIÓN resultados HDBSCAN ===
+!resultados_hdbscan/
+!resultados_hdbscan/*.png
+!resultados_hdbscan/*.csv
+!resultados_hdbscan/*.txt
+!resultados_hdbscan_total/
+!resultados_hdbscan_total/*
+!resultados_hdbscan_total/*.png
+!resultados_hdbscan_total/*.csv
+!resultados_gmm_piones/*.png
+!analysis_results/*.png
