@@ -45,7 +45,9 @@ df = pd.concat([
 
 print("Total events:", len(df))
 
+df["label"]= df["label"].replace({"piones":"pion"})
 
+labels= ["electron","muon","pion"]
 # ============================================================
 # FEATURES
 # ============================================================
@@ -85,7 +87,7 @@ print("Plotting latent space by labels...")
 
 plt.figure(figsize=(8,6))
 
-for label in np.unique(y_true):
+for label in labels:
 
     mask = y_true == label
 
@@ -152,14 +154,14 @@ classes= np.unique(np.concatenate([y_true, y_pred]))
 
 print("Plotting confusion matrix...")
 
-cm = confusion_matrix(y_true, y_pred,labels= classes)
+cm = confusion_matrix(y_true, y_pred,labels= labels)
 
 fig, ax = plt.subplots(figsize=(7,6))
 
 
 disp = ConfusionMatrixDisplay(
     confusion_matrix=cm,
-    display_labels=classes
+    display_labels=labels
 )
 
 
@@ -183,22 +185,27 @@ print("Plotting MSE distributions...")
 
 plt.figure(figsize=(8,6))
 
-for label in np.unique(y_true):
+mse_max= np.percentile(mse, 99)
+
+for label in labels:
 
     mask = y_true == label
 
     plt.hist(
         mse[mask],
-        bins=50,
+        bins=120,
         alpha=0.5,
         density=True,
         label=label
     )
+plt.xlim(0,mse_max)
 
 plt.xlabel("Reconstruction MSE")
 plt.ylabel("Density")
 plt.title("MSE distributions by particle")
 plt.legend()
+plt.yscale("log")
+
 plt.tight_layout()
 
 plt.savefig(
@@ -350,7 +357,6 @@ outlier_table.to_csv(
     os.path.join(OUTPUT_DIR, "outliers.csv"),
     index=False
 )
-
 
 # ============================================================
 # 11. FINAL SUMMARY
