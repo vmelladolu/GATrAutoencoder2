@@ -1404,7 +1404,7 @@ def main():
     from sklearn.mixture import GaussianMixture
     from sklearn.preprocessing import StandardScaler
 
-    features = z2d if z2d is not None else embeddings
+    features = embeddings
 
     #Escalado
     features_scaled= StandardScaler().fit_transform(features)
@@ -1479,7 +1479,7 @@ def main():
     print("Eventos raros:", len(high_error_idx))
     print("Clusters de eventos raros:", preds[high_error_idx])
     # -----llamamos al guardar features---
-    features = z2d if z2d is not None else embeddings
+    features = embeddings
 
     save_event_features(results,features,preds,args.output_dir,args.dataset_name,args.label_name)
 

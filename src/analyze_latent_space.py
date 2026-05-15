@@ -4,7 +4,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-
+from pathlib import Path
 from sklearn.metrics import confusion_matrix
 from sklearn.metrics import ConfusionMatrixDisplay
 
@@ -13,12 +13,14 @@ from sklearn.metrics import ConfusionMatrixDisplay
 # CONFIG
 # ============================================================
 
-ELECTRON_CSV = "electron_test_features.csv"
-MUON_CSV = "muon_test_features.csv"
-PION_CSV = "pion_test_features.csv"
+ELECTRON_CSV = "resultados_electron_test.csv"
+MUON_CSV = "resultados_muon_test.csv"
+PION_CSV = "resultados_pion_test.csv"
 
-CLASSIFIER_PATH = "svc_model.pkl"
-SCALER_PATH = "scaler.pkl"
+BASE = Path.home() / "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder"
+
+CLASSIFIER_PATH = BASE / "best_classifier.pkl"
+SCALER_PATH = BASE / "scaler.pkl"
 
 OUTPUT_DIR = "analysis_results"
 
@@ -52,7 +54,7 @@ labels= ["electron","muon","pion"]
 # FEATURES
 # ============================================================
 
-feature_cols = ["f0","f1"]
+feature_cols = [c for c in df.columns if c.startswith("f")]
 
 X = df[feature_cols].values
 
