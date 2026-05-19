@@ -1,0 +1,16 @@
+=== Resumen de evaluación ===
+
+Checkpoint : /home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/checkpoint_best_epoch0402_loss0.078888.pt
+Config     : /home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/config/model_cfg.yml
+
+N eventos  : 161926
+  pion      : 161926 eventos
+
+Métricas de reconstrucción (MSE):
+  mse_x: 371601152.000000
+  mse_y: 53.493675
+  mse_z: 1.001724
+  mse_k: 0.906751
+  mse_thr: 0.133778
+
+Per-event MSE (XYZ): mean=372925656.990249, median=248841214.344828, p95=1071943104.000000

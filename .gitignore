@@ -46,3 +46,5 @@ CLAUDE.md
 !resultados_hdbscan_total/*.csv
 !resultados_gmm_piones/*.png
 !analysis_results/*.png
+!testbeam_results/*.png
+

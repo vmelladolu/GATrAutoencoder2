@@ -13,16 +13,16 @@ from sklearn.metrics import ConfusionMatrixDisplay
 # CONFIG
 # ============================================================
 
-ELECTRON_CSV = "resultados_electron_test.csv"
-MUON_CSV = "resultados_muon_test.csv"
-PION_CSV = "resultados_pion_test.csv"
+ELECTRON_CSV = "resultados_electron_testbeam.csv"
+#MUON_CSV = "resultados_muon_test.csv"
+#PION_CSV = "resultados_pion_test.csv"
 
 BASE = Path.home() / "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder"
 
 CLASSIFIER_PATH = BASE / "best_classifier.pkl"
 SCALER_PATH = BASE / "scaler.pkl"
 
-OUTPUT_DIR = "analysis_results"
+OUTPUT_DIR = "testbeam_electron_results"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -35,15 +35,15 @@ print("Loading CSVs...")
 
 
 df_e = pd.read_csv(ELECTRON_CSV)
-df_m = pd.read_csv(MUON_CSV)
-df_p = pd.read_csv(PION_CSV)
+#df_m = pd.read_csv(MUON_CSV)
+#df_p = pd.read_csv(PION_CSV)
 
 
-df = pd.concat([
-    df_e,
-    df_m,
-    df_p
-], ignore_index=True)
+df = df_e #pd.concat([
+    #df_e,
+    #df_m,
+    #df_p
+#], ignore_index=True)
 
 print("Total events:", len(df))
 
