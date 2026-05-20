@@ -11,7 +11,7 @@ sns.set_context("talk")
 # LOAD CSV
 # ==========================================================
 
-CSV_FILE = "classified_testbeam.csv"
+CSV_FILE = "classified_testbeam_piones.csv"
 
 print(f"Loading {CSV_FILE}")
 
@@ -24,7 +24,7 @@ print(df.columns)
 # OUTPUT DIRECTORY
 # ==========================================================
 
-OUTDIR = "testbeam_plots"
+OUTDIR = "testbeam_piones_plots"
 
 os.makedirs(
     OUTDIR,

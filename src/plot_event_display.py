@@ -1,146 +1,192 @@
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
+import argparse
 import h5py
-from pathlib import Path
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
 
+from mpl_toolkits.mplot3d import Axes3D
 
-# ============================================================
-# PATHS
-# ============================================================
+# ==========================================================
+# ARGUMENTS
+# ==========================================================
 
-CSV_DIR = Path(
-    "/media/FQM378/vmellado/GATrEnv/GATrAutoencoder"
+parser = argparse.ArgumentParser()
+
+parser.add_argument(
+    "--csv",
+    required=True,
+    help="CSV clasificado"
 )
 
-H5_DIR = Path(
-    "/media/FQM378/vmellado/GATrEnv/data/clasificador"
+parser.add_argument(
+    "--h5",
+    required=True,
+    help="Archivo HDF5 original"
 )
 
-OUTPUT_DIR = Path(
-    "/media/FQM378/vmellado/GATrEnv/GATrAutoencoder/event_displays"
+parser.add_argument(
+    "--event",
+    type=int,
+    required=True,
+    help="Índice del evento en el CSV"
 )
 
-OUTPUT_DIR.mkdir(exist_ok=True)
+parser.add_argument(
+    "--save",
+    default=None,
+    help="Guardar figura"
+)
 
+args = parser.parse_args()
 
-# ============================================================
-# LOAD CSVs
-# ============================================================
+# ==========================================================
+# LOAD CSV
+# ==========================================================
 
-csv_files = [
-    CSV_DIR / "resultados_electron_train.csv",
-    CSV_DIR / "resultados_muon_train.csv",
-    CSV_DIR / "resultados_pion_train.csv",
-    CSV_DIR / "resultados_electron_test.csv",
-    CSV_DIR / "resultados_muon_test.csv",
-    CSV_DIR / "resultados_pion_test.csv",
-]
+print("Loading CSV...")
 
-dfs = []
+df = pd.read_csv(args.csv)
 
-for f in csv_files:
-    dfs.append(pd.read_csv(f))
+print(f"Total events in CSV: {len(df)}")
 
-df = pd.concat(dfs, ignore_index=True)
+# ==========================================================
+# SELECT EVENT
+# ==========================================================
 
-print(f"Total rows: {len(df)}")
+row = df.iloc[args.event]
 
+print("\n==============================")
+print("EVENT INFORMATION")
+print("==============================")
 
-# ============================================================
-# SAMPLE EVENTS
-# ============================================================
+for col in row.index:
+    print(f"{col}: {row[col]}")
 
-sample = df.sample(20, random_state=42)
+# ==========================================================
+# EVENT ID
+# ==========================================================
 
+# MUY IMPORTANTE:
+# el CSV debe contener event_idx
+# que corresponde al índice del evento en el h5
 
-# ============================================================
-# MAP LABEL -> H5 FILE
-# ============================================================
+event_idx = int(row["event_id"])
 
-label_to_h5 = {
-    "electron": H5_DIR / "50k_e-_Emin1GeV_Emax120GeV_continuous_fixed_position_5-5--20_sigmaMomentum_0.1_train.h5",
-    "electron": H5_DIR / "50k_e-_Emin1GeV_Emax120GeV_continuous_fixed_position_5-5--20_sigmaMomentum_0.1_test.h5"
+print(f"\nUsing H5 event index: {event_idx}")
 
-    "muon": H5_DIR / "50k_mu-_Emin1GeV_Emax120GeV_continuous_fixed_position_5-5--20_sigmaMomentum_0.1_train.h5",
-    "muon": H5_DIR / "50k_mu-_Emin1GeV_Emax120GeV_continuous_fixed_position_5-5--20_sigmaMomentum_0.1_test.h5"
+# ==========================================================
+# LOAD HDF5
+# ==========================================================
 
-    "pion": H5_DIR / "50k_pi-_Emin1GeV_Emax120GeV_continuous_fixed_position_5-5--20_sigmaMomentum_0.1_train.h5",
-    "pion": H5_DIR / "50k_pi-_Emin1GeV_Emax120GeV_continuous_fixed_position_5-5--20_sigmaMomentum_0.1_test.h5"
-}
+print("\nLoading HDF5...")
 
+f = h5py.File(args.h5, "r")
 
-# ============================================================
-# LOOP OVER EVENTS
-# ============================================================
+x = f["x"][:]
+y = f["y"][:]
+z = f["z"][:]
+thr = f["thr"][:]
 
-for _, row in sample.iterrows():
+offsets = f["offsets"][:]
 
-    event_id = int(row["event_id"])
+# ==========================================================
+# GET EVENT HITS
+# ==========================================================
 
-    true_label = row["label"]
+start = offsets[event_idx]
+end = offsets[event_idx + 1]
 
-    pred_label = row.get("prediction", "unknown")
+evt_x = x[start:end]
+evt_y = y[start:end]
+evt_z = z[start:end]
+evt_thr = thr[start:end]
 
-    h5_path = label_to_h5[true_label]
+print(f"Hits in event: {len(evt_x)}")
 
-    print(f"Processing event {event_id}")
+# ==========================================================
+# LABELS
+# ==========================================================
 
-    with h5py.File(h5_path, "r") as f:
+true_label = row.get("label", "unknown")
+pred_label = row.get("prediction_name", "unknown")
 
-        event_ids = f["event_id"][:]
+electron_score = row.get("electron_score", None)
+pion_score = row.get("pion_score", None)
+muon_score = row.get("muon_score", None)
 
-        i_all = f["i"][:]
+# ==========================================================
+# PLOT
+# ==========================================================
 
-        j_all = f["j"][:]
+plt.style.use("dark_background")
 
-        energy_all = f["energy"][:]
+fig = plt.figure(figsize=(12, 10))
 
-        # select hits belonging to this event
-        mask = (event_ids == event_id)
+ax = fig.add_subplot(111, projection='3d')
 
-        i_hits = i_all[mask]
+sc = ax.scatter(
+    evt_x,
+    evt_y,
+    evt_z,
+    c=evt_thr,
+    cmap="viridis",
+    s=8,
+    alpha=0.85
+)
 
-        j_hits = j_all[mask]
+# ==========================================================
+# AXES
+# ==========================================================
 
-        e_hits = energy_all[mask]
+ax.set_xlabel("X")
+ax.set_ylabel("Y")
+ax.set_zlabel("Layer")
 
-        # build 2D image
-        img = np.zeros((30, 30))
+# ==========================================================
+# TITLE
+# ==========================================================
 
-        for ii, jj, ee in zip(i_hits, j_hits, e_hits):
+title = (
+    f"Event {event_idx}\n"
+    f"True: {true_label} | Pred: {pred_label}"
+)
 
-            img[ii, jj] += ee
+if electron_score is not None:
 
-        # ====================================================
-        # PLOT
-        # ====================================================
+    title += (
+        f"\n"
+        f"e={electron_score:.3f}  "
+        f"π={pion_score:.3f}  "
+        f"μ={muon_score:.3f}"
+    )
 
-        plt.figure(figsize=(6, 6))
+ax.set_title(title)
 
-        plt.imshow(
-            img.T,
-            origin="lower",
-            aspect="auto"
-        )
+# ==========================================================
+# COLORBAR
+# ==========================================================
 
-        plt.title(
-            f"event={event_id} | true={true_label} | pred={pred_label}"
-        )
+cbar = plt.colorbar(sc)
 
-        plt.xlabel("i")
+cbar.set_label("Threshold")
 
-        plt.ylabel("j")
+# ==========================================================
+# LAYOUT
+# ==========================================================
 
-        plt.colorbar(label="Energy")
+plt.tight_layout()
 
-        plt.tight_layout()
+# ==========================================================
+# SAVE
+# ==========================================================
 
-        plt.savefig(
-            OUTPUT_DIR / f"event_{event_id}.png",
-            dpi=200
-        )
+if args.save is not None:
 
-        plt.close()
+    plt.savefig(
+        args.save,
+        dpi=300
+    )
 
-print("Done.")
+    print(f"\nSaved figure: {args.save}")
+
+plt.show()
