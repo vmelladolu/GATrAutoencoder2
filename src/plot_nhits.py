@@ -118,8 +118,8 @@ def plot_distribution(
             label=f"Predicted {particle}"
         )
 
-    plt.xlabel("N hits")
-    plt.ylabel("Density")
+    plt.xlabel("Nhits")
+    plt.ylabel("Events")
 
     plt.title(title)
 
@@ -166,7 +166,7 @@ print(sim_df.columns)
 # BUILD CLASSIFIED NHITS
 # ----------------------------------------------------------
 
-classified_sim_nhits = defaultdict(list)
+classified_sim_nhits = defaultdict(lambda: defaultdict(list))
 
 for particle, h5file in SIM_H5_FILES.items():
 
@@ -185,7 +185,7 @@ for particle, h5file in SIM_H5_FILES.items():
         if evt >= len(nhits):
             continue
 
-        classified_sim_nhits[pred].append(
+        classified_sim_nhits[particle][pred].append(
             nhits[evt]
         )
 
@@ -199,7 +199,7 @@ for particle in ["electron", "muon", "pion"]:
 
         original=sim_original[particle],
 
-        classified=classified_sim_nhits,
+        classified=classified_sim_nhits[particle],
 
         title=f"Simulation NHits - {particle}",
 
