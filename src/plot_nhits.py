@@ -45,21 +45,21 @@ REAL_H5_FILES = {
 
     "electron": [
 
-        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/electrones_20_test.h5",
-        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/electrones_50_test.h5",
-        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/electrones_80_test.h5",
+        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam2/electrones_20.h5",
+        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam2/electrones_50.h5",
+        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam2/electrones_80.h5",
     ],
 
     "pion": [
 
-        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/piones_20_test.h5",
-        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/piones_50_test.h5",
-        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/piones_80_test.h5",
+        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam2/piones_20.h5",
+        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam2/piones_50.h5",
+        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam2/piones_80.h5",
     ]
 }
 
 REAL_ELECTRON_CSV = (
-    "classified_testbeam_electrones.csv"
+    "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/classified_testbeam2_electrones.csv"
 )
 
 REAL_PION_CSV = (
@@ -215,7 +215,7 @@ print("REAL DATA NHITS")
 print("===================================")
 
 real_original = {}
-real_classified = defaultdict(list)
+real_classified = defaultdict(lambda: defaultdict(list))
 
 # ----------------------------------------------------------
 # ORIGINAL NHITS
@@ -292,7 +292,7 @@ for _, row in df_e.iterrows():
 
             local_evt = evt - start
 
-            real_classified[pred].append(
+            real_classified["electron"][pred].append(
                 info["nhits"][local_evt]
             )
 
@@ -341,7 +341,7 @@ for _, row in df_p.iterrows():
 
             local_evt = evt - start
 
-            real_classified[pred].append(
+            real_classified["pion"][pred].append(
                 info["nhits"][local_evt]
             )
 
@@ -357,7 +357,7 @@ for particle in ["electron", "pion"]:
 
         original=real_original[particle],
 
-        classified=real_classified,
+        classified=real_classified[particle],
 
         title=f"Real Testbeam NHits - {particle}",
 
