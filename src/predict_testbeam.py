@@ -1,3 +1,4 @@
+import h5py
 import pandas as pd
 import numpy as np
 import torch
@@ -7,24 +8,85 @@ import joblib
 # ==========================================================
 # LOAD REAL DATA
 # ==========================================================
+def load_nhits_from_h5(h5file):
+    with h5py.File(h5file, "r") as f:
+        offsets = f["offsets"][:]
+    return np.diff(offsets)
 
-real_csvs = ["piones_testbeam_20_test.csv","piones_testbeam_50_test.csv","piones_testbeam_80_test.csv"]
+
+real_files = [
+    (
+        "piones_testbeam_20_test.csv",
+        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/piones_20_test.h5"
+    ),
+    (
+        "piones_testbeam_50_test.csv",
+        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/piones_50_test.h5"
+    ),
+    (
+        "piones_testbeam_80_test.csv",
+        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/piones_80_test.h5"
+    ),
+]
 
 dfs = []
 
-for path in real_csvs:
+for csv_path, h5_path in real_files:
 
-    print(f"Loading: {path}")
+    print(f"Loading CSV: {csv_path}")
+    print(f"Loading H5:  {h5_path}")
 
-    dfs.append(
-        pd.read_csv(path)
+    tmp = pd.read_csv(csv_path)
+
+    nhits = load_nhits_from_h5(h5_path)
+
+    # ==========================================================
+    # DEBUG CHECK: CSV vs H5 ALIGNMENT
+    # ==========================================================
+    print("\n--- DEBUG CHECK ---")
+    print(f"File: {csv_path}")
+    print(f"CSV rows: {len(tmp)}")
+    print(f"H5 events: {len(nhits)}")
+    print("\nFirst 3 CSV rows:")
+    print(tmp.head(3))
+    print("\nFirst 10 nhits:")
+    print(nhits[:10])
+
+    if len(tmp) > 0:
+        print("\nLast CSV row:")
+        print(tmp.iloc[-1].to_dict())
+
+    if len(nhits) > 0:
+        print("\nLast nhits value:")
+        print(nhits[-1])
+    #--------------------------------------------------
+
+    n = min(len(tmp), len(nhits))
+
+    if len(tmp) != len(nhits):
+        print(
+            f"WARNING: length mismatch in {csv_path}: "
+            f"{len(tmp)} rows in CSV vs {len(nhits)} events in H5. "
+            f"Using first {n} events."
     )
+
+    tmp = tmp.iloc[:n].copy()
+    nhits = nhits[:n]
+
+    tmp["source_file"] = csv_path
+    tmp["event_id"] = np.arange(len(tmp), dtype=int)
+    tmp["nhits"] = nhits
+
+    dfs.append(tmp)
 
 df = pd.concat(
     dfs,
     ignore_index=True
 )
+print(df.columns)
 
+if "source_file" in df.columns:
+    print(df["source_file"].value_counts())
 # ==========================================================
 # LATENT COLUMNS
 # ==========================================================
@@ -128,6 +190,25 @@ with torch.no_grad():
     )
 
 # ==========================================================
+# PHYSICS-BASED POST-PROCESSING
+# ==========================================================
+
+if "nhits" in df.columns:
+
+    nhits_thr = 200
+    muon_thr = 0.60
+
+    low_hits = df["nhits"].values < nhits_thr
+    confident_muon = probs[:, 1] > muon_thr
+
+    force_muon = low_hits & confident_muon
+
+    preds[force_muon] = 1   # 1 = muon
+
+    probs[force_muon, :] = 0.0
+    probs[force_muon, 1] = 1.0
+
+# ==========================================================
 # SAVE RESULTS
 # ==========================================================
 
@@ -146,7 +227,7 @@ df["prediction"] = [
     for p in preds
 ]
 
-out_file = "classified_testbeam_piones.csv"
+out_file = "classified_testbeam1_piones2.csv"
 
 df.to_csv(
     out_file,
