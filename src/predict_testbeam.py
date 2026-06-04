@@ -13,19 +13,84 @@ def load_nhits_from_h5(h5file):
         offsets = f["offsets"][:]
     return np.diff(offsets)
 
+def build_event_grpc_masks(h5_path, n_first=3, n_last=5, max_empty=2):
+    with h5py.File(h5_path, "r") as f:
+        offsets = f["offsets"][:]
+        k_hits = f["k"][:]
+
+    n_events = len(offsets) - 1
+
+    first_signal = np.zeros(n_events, dtype=bool)
+    last_signal = np.zeros(n_events, dtype=bool)
+    complete_event = np.zeros(n_events, dtype=bool)
+    unique_track = np.zeros(n_events, dtype=bool)
+
+    for ev in range(n_events):
+        start = offsets[ev]
+        stop = offsets[ev + 1]
+        ks = np.unique(k_hits[start:stop])
+
+        if ks.size == 0:
+            continue
+
+        first_signal[ev] = np.any(ks < n_first)
+        last_signal[ev] = np.any(ks >= (ks.max() - n_last + 1))
+
+        sorted_ks = np.sort(ks)
+        gaps = np.diff(sorted_ks)
+        max_gap = gaps.max() if len(gaps) else 0
+        complete_event[ev] = max_gap <= (max_empty + 1)
+
+        unique_track[ev] = True
+
+    return first_signal, last_signal, complete_event, unique_track
+
+def inspect_h5(path):
+    with h5py.File(path, "r") as f:
+        print("Top-level keys:", list(f.keys()))
+
+        def show(name, obj):
+            if isinstance(obj, h5py.Dataset):
+                print(f"DATASET {name} shape={obj.shape} dtype={obj.dtype}")
+            else:
+                print(f"GROUP    {name}")
+
+        f.visititems(show)
+
+def load_k_per_event(h5file):
+    with h5py.File(h5file, "r") as f:
+        offsets = f["offsets"][:]
+        k_hits = f["k"][:]
+
+    n_events = len(offsets) - 1
+    K_event = np.zeros(n_events, dtype=np.int32)
+
+    for ev in range(n_events):
+        start = offsets[ev]
+        stop = offsets[ev + 1]
+
+        if stop <= start:
+            K_event[ev] = 0
+            continue
+
+        K_event[ev] = len(np.unique(k_hits[start:stop]))
+
+    return K_event
+
+
 
 real_files = [
     (
-        "piones_testbeam_20_test.csv",
-        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/piones_20_test.h5"
+        "electrones_testbeam_20_test.csv",
+        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/electrones_20_test.h5"
     ),
     (
-        "piones_testbeam_50_test.csv",
-        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/piones_50_test.h5"
+        "electrones_testbeam_50_test.csv",
+        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/electrones_50_test.h5"
     ),
     (
-        "piones_testbeam_80_test.csv",
-        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/piones_80_test.h5"
+        "electrones_testbeam_80_test.csv",
+        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/electrones_80_test.h5"
     ),
 ]
 
@@ -39,6 +104,12 @@ for csv_path, h5_path in real_files:
     tmp = pd.read_csv(csv_path)
 
     nhits = load_nhits_from_h5(h5_path)
+
+    inspect_h5(h5_path)
+    K_event= load_k_per_event(h5_path)
+
+    first_signal, last_signal, complete_event, unique_track = build_event_grpc_masks(h5_path)
+
 
     # ==========================================================
     # DEBUG CHECK: CSV vs H5 ALIGNMENT
@@ -61,21 +132,44 @@ for csv_path, h5_path in real_files:
         print(nhits[-1])
     #--------------------------------------------------
 
-    n = min(len(tmp), len(nhits))
+    n = min(len(tmp), len(nhits), len(K_event), len(first_signal))
 
-    if len(tmp) != len(nhits):
+    if len(tmp) != len(nhits) or len(tmp) !=len(K_event) or len(first_signal) != n:
         print(
             f"WARNING: length mismatch in {csv_path}: "
-            f"{len(tmp)} rows in CSV vs {len(nhits)} events in H5. "
+            f"{len(tmp)} rows in CSV vs {len(nhits)} nhits vs {len(K_event)}. "
             f"Using first {n} events."
     )
 
     tmp = tmp.iloc[:n].copy()
     nhits = nhits[:n]
+    K_event= K_event[:n]
+
+    first_signal = first_signal[:n]
+    last_signal = last_signal[:n]
+    complete_event = complete_event[:n]
+    unique_track = unique_track[:n]
 
     tmp["source_file"] = csv_path
     tmp["event_id"] = np.arange(len(tmp), dtype=int)
     tmp["nhits"] = nhits
+    tmp["K_event"]= K_event
+
+    tmp["K_event"] = pd.to_numeric(tmp["K_event"], errors="coerce")
+    tmp["density"] = tmp["nhits"] / tmp["K_event"].replace(0, np.nan)
+
+    tmp["first_signal"] = first_signal
+    tmp["last_signal"] = last_signal
+    tmp["complete_event"] = complete_event
+
+    tmp["muon_mask"] = (
+        (tmp["density"] < 3.5) &
+        (tmp["nhits"] < 200) &
+        first_signal &
+        last_signal &
+        complete_event &
+        unique_track
+    )
 
     dfs.append(tmp)
 
@@ -92,7 +186,7 @@ if "source_file" in df.columns:
 # ==========================================================
 
 latent_cols = sorted(
-    [c for c in df.columns if c.startswith("f")],
+    [c for c in df.columns if c.startswith("f") and c[1:].isdigit()],
     key=lambda x: int(x[1:])
 )
 
@@ -193,20 +287,10 @@ with torch.no_grad():
 # PHYSICS-BASED POST-PROCESSING
 # ==========================================================
 
-if "nhits" in df.columns:
-
-    nhits_thr = 200
-    muon_thr = 0.60
-
-    low_hits = df["nhits"].values < nhits_thr
-    confident_muon = probs[:, 1] > muon_thr
-
-    force_muon = low_hits & confident_muon
-
-    preds[force_muon] = 1   # 1 = muon
-
-    probs[force_muon, :] = 0.0
-    probs[force_muon, 1] = 1.0
+muon_mask = df["muon_mask"].to_numpy(dtype=bool)
+preds[muon_mask] = 1
+probs[muon_mask, :] = 0.0
+probs[muon_mask, 1] = 1.0
 
 # ==========================================================
 # SAVE RESULTS
@@ -227,7 +311,7 @@ df["prediction"] = [
     for p in preds
 ]
 
-out_file = "classified_testbeam1_piones2.csv"
+out_file = "classified_testbeam1_electrones2.csv"
 
 df.to_csv(
     out_file,
