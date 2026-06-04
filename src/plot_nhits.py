@@ -10,7 +10,7 @@ from collections import defaultdict
 # OUTPUT DIR
 # ==========================================================
 
-OUTDIR = "nhits_plots_events"
+OUTDIR = "nhits_plots_events_softmax3"
 
 os.makedirs(
     OUTDIR,
@@ -52,18 +52,18 @@ REAL_H5_FILES = {
 
     "pion": [
 
-        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam2/piones_20.h5",
-        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam2/piones_50.h5",
-        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam2/piones_80.h5",
+        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/piones_20_test.h5",
+        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/piones_50_test.h5",
+        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/piones_80_test.h5",
     ]
 }
 
 REAL_ELECTRON_CSV = (
-    "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/classified_testbeam2_electrones.csv"
+    "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/classified_testbeam2_electrones2.csv"
 )
 
 REAL_PION_CSV = (
-    "classified_testbeam_piones.csv"
+    "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/classified_testbeam1_piones2.csv"
 )
 
 # ==========================================================
@@ -249,103 +249,200 @@ df_p = pd.read_csv(
     REAL_PION_CSV
 )
 
+print(df_e.columns)
+print(df_p.columns)
+print(df_e["source_file"].value_counts())
+print(df_p["source_file"].value_counts())
+
+def print_class_summary(name, df):
+    total = len(df)
+    counts = df["prediction"].value_counts().reindex(["muon", "pion", "electron"], fill_value=0)
+    perc = counts / total * 100
+
+    print(f"\n=== {name} ===")
+    print("Total:", total)
+    for cls in ["muon", "pion", "electron"]:
+        print(f"{cls:8s} {counts[cls]:10d}  ({perc[cls]:6.2f}%)")
+
+print_class_summary("ELECTRON TESTBEAM", df_e)
+print_class_summary("PION TESTBEAM", df_p)
+
+#----------------------- PLOTS 80 GeV----------------------------------
+
+df_e_80 = df_e[df_e["source_file"] == "electrones_80_testbeam2.csv"].copy()
+df_p_80 = df_p[df_p["source_file"] == "piones_testbeam_80_test.csv"].copy()
+
+print_class_summary("ELECTRON 80 TESTBEAM", df_e_80)
+print_class_summary("PION 80 TESTBEAM", df_p_80)
+
+electron_nhits_80 = {
+    "electrones_80_testbeam2.csv": load_nhits_from_h5(
+        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam2/electrones_80.h5"
+    )
+}
+
+pion_nhits_80 = {
+    "piones_testbeam_80_test.csv": load_nhits_from_h5(
+        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/piones_80_test.h5"
+    )
+}
+# ==========================================================
+# REAL DATA NHITS - 80 GeV ONLY
+# ==========================================================
+
+real_original_80 = {}
+real_classified_80 = defaultdict(lambda: defaultdict(list))
+
+real_original_80["electron"] = electron_nhits_80["electrones_80_testbeam2.csv"]
+real_original_80["pion"] = pion_nhits_80["piones_testbeam_80_test.csv"]
+
+for _, row in df_e_80.iterrows():
+
+    evt = int(row["event_id"])
+    pred = row["prediction"]
+    source = row["source_file"]
+
+    nhits = electron_nhits_80[source]
+
+    if evt >= len(nhits):
+        continue
+
+    real_classified_80["electron"][pred].append(
+        nhits[evt]
+    )
+
+for _, row in df_p_80.iterrows():
+
+    evt = int(row["event_id"])
+    pred = row["prediction"]
+    source = row["source_file"]
+
+    nhits = pion_nhits_80[source]
+
+    if evt >= len(nhits):
+        continue
+
+    real_classified_80["pion"][pred].append(
+        nhits[evt]
+    )
+
+def plot_distribution(original, classified, title, outfile, logy=False):
+    plt.figure(figsize=(10,7))
+
+    plt.hist(original, bins=100, density=False, histtype="step", linewidth=3, label="Original")
+
+    for particle, values in classified.items():
+        if len(values) == 0:
+            continue
+        plt.hist(values, bins=100, density=False, histtype="step", linewidth=2, label=f"Predicted {particle}")
+
+    plt.xlabel("Nhits")
+    plt.ylabel("Events")
+    plt.title(title)
+    plt.legend()
+    if logy:
+        plt.yscale("log")
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTDIR, outfile), dpi=300)
+    plt.close()
+
+for particle in ["electron", "pion"]:
+    plot_distribution(
+        original=real_original_80[particle],
+        classified=real_classified_80[particle],
+        title=f"Real Testbeam NHits 80 GeV - {particle}",
+        outfile=f"real_nhits_{particle}_80.png",
+        logy=True
+    )
+
 # ==========================================================
 # ELECTRON TESTBEAM
 # ==========================================================
 
-electron_offsets = {}
+electron_nhits = {
 
-offset = 0
+    "electrones_20_testbeam2.csv":
+        load_nhits_from_h5(
+            "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam2/electrones_20.h5"
+        ),
 
-for energy, h5file in zip(
+    "electrones_50_testbeam2.csv":
+        load_nhits_from_h5(
+            "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam2/electrones_50.h5"
+        ),
 
-    [20, 50, 80],
-
-    REAL_H5_FILES["electron"]
-):
-
-    nhits = load_nhits_from_h5(h5file)
-
-    electron_offsets[energy] = {
-
-        "offset": offset,
-        "nhits": nhits
-    }
-
-    offset += len(nhits)
+    "electrones_80_testbeam2.csv":
+        load_nhits_from_h5(
+            "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam2/electrones_80.h5"
+        ),
+}
 
 for _, row in df_e.iterrows():
 
     evt = int(row["event_id"])
-
     pred = row["prediction"]
+    source = row["source_file"]
 
-    for energy in [20, 50, 80]:
+    nhits = electron_nhits[source]
 
-        info = electron_offsets[energy]
+    if evt >= len(nhits):
+        continue
 
-        start = info["offset"]
-
-        stop = start + len(info["nhits"])
-
-        if start <= evt < stop:
-
-            local_evt = evt - start
-
-            real_classified["electron"][pred].append(
-                info["nhits"][local_evt]
-            )
-
-            break
+    real_classified["electron"][pred].append(
+        nhits[evt]
+    )
 
 # ==========================================================
 # PION TESTBEAM
 # ==========================================================
+pion_nhits = {
 
-pion_offsets = {}
+    "piones_testbeam_20_test.csv":
+        load_nhits_from_h5(
+            "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/piones_20_test.h5"
+        ),
 
-offset = 0
+    "piones_testbeam_50_test.csv":
+        load_nhits_from_h5(
+            "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/piones_50_test.h5"
+        ),
 
-for energy, h5file in zip(
-
-    [20, 50, 80],
-
-    REAL_H5_FILES["pion"]
-):
-
-    nhits = load_nhits_from_h5(h5file)
-
-    pion_offsets[energy] = {
-
-        "offset": offset,
-        "nhits": nhits
-    }
-
-    offset += len(nhits)
+    "piones_testbeam_80_test.csv":
+        load_nhits_from_h5(
+            "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/piones_80_test.h5"
+        ),
+}
 
 for _, row in df_p.iterrows():
 
     evt = int(row["event_id"])
-
     pred = row["prediction"]
+    source = row["source_file"]
 
-    for energy in [20, 50, 80]:
+    nhits = pion_nhits[source]
 
-        info = pion_offsets[energy]
+    if evt >= len(nhits):
+        continue
 
-        start = info["offset"]
+    real_classified["pion"][pred].append(
+        nhits[evt]
+    )
 
-        stop = start + len(info["nhits"])
+# ----------------------------------------------------------
+# CHECK COUNTS HERE
+# ----------------------------------------------------------
+print("\n=== ELECTRON CHECK ===")
+print("Original total:", len(real_original["electron"]))
+for cls, vals in real_classified["electron"].items():
+    print(cls, len(vals))
 
-        if start <= evt < stop:
+print("\n=== PION CHECK ===")
+print("Original total:", len(real_original["pion"]))
+for cls, vals in real_classified["pion"].items():
+    print(cls, len(vals))
 
-            local_evt = evt - start
-
-            real_classified["pion"][pred].append(
-                info["nhits"][local_evt]
-            )
-
-            break
+print(df_e["prediction"].value_counts())
+print(df_p["prediction"].value_counts())
 
 # ==========================================================
 # PLOTS REAL DATA
@@ -363,6 +460,45 @@ for particle in ["electron", "pion"]:
 
         outfile=f"real_nhits_{particle}.png"
     )
+
+# ==========================================================
+# COMPARACIÓN DIRECTA SIM vs TESTBEAM  <-- AÑADIR AQUÍ
+# ==========================================================
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+# --- Piones ---
+ax = axes[0]
+ax.hist(sim_original["pion"], bins=100, density=True, alpha=0.5, label="Sim pion")
+ax.hist(sim_original["muon"], bins=100, density=True, alpha=0.5, label="Sim muon")
+ax.hist(real_original["pion"], bins=100, density=True, histtype="step", lw=2, label="TB 'pion'")
+ax.set_xlabel("NHits")
+ax.set_ylabel("Density")
+ax.set_title("Pion testbeam vs Simulación")
+ax.legend()
+ax.set_xlim(0, 500)
+# --- Electrones ---
+ax = axes[1]
+ax.hist(sim_original["electron"], bins=100, density=True, alpha=0.5, label="Sim electron")
+ax.hist(sim_original["muon"], bins=100, density=True, alpha=0.5, label="Sim muon")
+ax.hist(real_original["electron"], bins=100, density=True, histtype="step", lw=2, label="TB 'electron'")
+ax.set_xlabel("NHits")
+ax.set_title("Electron testbeam vs Simulación")
+ax.legend()
+ax.set_xlim(0, 500)
+plt.tight_layout()
+plt.savefig(os.path.join(OUTDIR, "sim_vs_tb_comparison.png"), dpi=300)
+plt.close()
+print("Guardado: sim_vs_tb_comparison.png")
+# ==========================================================
+# FRACCIÓN CON NHITS > 200
+# ==========================================================
+print("\nFracción de eventos con NHits > 200:")
+for label in ["electron", "pion"]:
+    arr = np.array(real_original[label])
+    frac = (arr > 200).mean()
+    print(f"  TB {label}: {frac:.1%}")
+# ==========================================================
+# ALL NHITS PLOTS GENERATED
+# ==========================================================
 
 print("\n===================================")
 print("ALL NHITS PLOTS GENERATED")
