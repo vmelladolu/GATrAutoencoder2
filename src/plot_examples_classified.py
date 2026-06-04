@@ -39,15 +39,15 @@ REAL_H5_FILES = {
 }
 
 # CSVs clasificados
-REAL_ELECTRON_CSV = "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/classified_testbeam2_electrones.csv"
-REAL_PION_CSV     = "classified_testbeam_piones.csv"
+REAL_ELECTRON_CSV = "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/classified_testbeam2_electrones2.csv"
+REAL_PION_CSV     = "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/classified_testbeam1_piones2.csv"
 
 
 # ==========================================================
 # OUTPUT
 # ==========================================================
 
-OUTDIR = "event_display_gallery"
+OUTDIR = "event_display_gallery_softmax"
 
 os.makedirs(
     OUTDIR,
@@ -85,6 +85,14 @@ def load_event(h5file, event_id):
     evt_y = y[start:end]
     evt_z = z[start:end]
 
+    if event_id >= len(offsets) - 1:
+
+       raise ValueError(
+           f"event_id={event_id} "
+           f"outside file range "
+           f"({len(offsets)-1} events)"
+       )
+
     f.close()
 
     return evt_x, evt_y, evt_z
@@ -96,23 +104,31 @@ def load_event(h5file, event_id):
 
 def determine_real_h5(row):
 
-    source_file = row["source_file"]
+    source = row["source_file"]
 
-    source_file = source_file.lower()
+    if source == "electrones_20_testbeam2.csv":
 
-    if "electron" in source_file:
+        return REAL_H5_FILES["electron_20"]
 
-        particle = "electron"
+    elif source == "electrones_50_testbeam2.csv":
 
-    elif "pion" in source_file:
+        return REAL_H5_FILES["electron_50"]
 
-        particle = "pion"
+    elif source == "electrones_80_testbeam2.csv":
+        return REAL_H5_FILES["electron_80"]
 
-    else:
+    elif source == "piones_testbeam_20_test.csv":
+        return REAL_H5_FILES["pion_20"]
 
-        raise ValueError(
-            f"Cannot determine particle from {source_file}"
-        )
+    elif source == "piones_testbeam_50_test.csv":
+        return REAL_H5_FILES["pion_50"]
+
+    elif source == "piones_testbeam_80_test.csv":
+        return REAL_H5_FILES["pion_80"]
+
+    raise ValueError(
+        f"Unknown source_file: {source}"
+    )
 
     # energy
     if "20" in source_file:
@@ -302,6 +318,13 @@ real_p_df = pd.read_csv(
     REAL_PION_CSV
 )
 
+# DEBUG
+print(real_e_df.columns)
+print(real_p_df.columns)
+
+print(real_e_df["source_file"].value_counts())
+
+
 # ==========================================================
 # ADD SOURCE INFO
 # ==========================================================
@@ -309,8 +332,6 @@ real_p_df = pd.read_csv(
 # IMPORTANTE:
 # aquí defines de qué dataset viene cada csv
 
-real_e_df["source_file"] = "electron_80"
-real_p_df["source_file"] = "pion_80"
 
 # si tienes separados por energía:
 # puedes concatenarlos individualmente
@@ -322,6 +343,16 @@ real_df = pd.concat(
     ],
     ignore_index=True
 )
+
+real_e_80_df = real_e_df[
+    real_e_df["source_file"] == "electrones_80_testbeam2.csv"
+].copy()
+
+real_p_80_df = real_p_df[
+    real_p_df["source_file"] == "piones_testbeam_80_test.csv"
+].copy()
+
+
 
 # ==========================================================
 # SIMULATION GALLERIES
@@ -359,7 +390,78 @@ for particle in [
         output_name=f"real_{particle}_gallery.png"
     )
 
+# ==========================================================
+# REAL DATA GALLERIES - ELECTRONS 80
+# ==========================================================
+muon_high_hits_e80 = real_e_80_df[
+    (real_e_80_df["prediction"] == "muon") &
+    (real_e_80_df["nhits"] > 1000)
+].copy()
+
+pion80_muon = real_p_80_df[
+    (real_p_80_df["prediction"] == "muon") &
+    (real_p_80_df["nhits"] > 1000)
+].copy()
+
+pion80_pion = real_p_80_df[
+    (real_p_80_df["prediction"] == "pion")
+].copy()
+
+plot_gallery(
+    df=muon_high_hits_e80,
+    h5_mapping=REAL_H5_FILES,
+    particle_name="muon",
+    dataset_name="real",
+    output_name="real_muon_highhits_e80_gallery.png"
+)
+
+plot_gallery(
+    df=pion80_muon,
+    h5_mapping=REAL_H5_FILES,
+    particle_name="muon",
+    dataset_name="real",
+    output_name="real_pion80_muon_highhits_gallery.png"
+)
+
+plot_gallery(
+    df=pion80_pion,
+    h5_mapping=REAL_H5_FILES,
+    particle_name="pion",
+    dataset_name="real",
+    output_name="real_pion80_muon_highhits_gallery.png"
+)
+
+
+for pred_class in ["electron", "muon", "pion"]:
+    plot_gallery(
+            df=real_e_80_df,
+            h5_mapping=REAL_H5_FILES,
+            particle_name=pred_class,
+            dataset_name="real",
+            output_name=f"real_e80_{pred_class}_gallery.png"
+    )
+
+# ==========================================================
+# REAL DATA GALLERIES - PIONS 80
+# ==========================================================
+
+for pred_class in ["electron", "muon", "pion"]:
+    plot_gallery(
+        df=real_p_80_df,
+        h5_mapping=REAL_H5_FILES,
+        particle_name=pred_class,
+        dataset_name="real",
+        output_name=f"real_p80_{pred_class}_gallery.png"
+    )
+
+print(real_e_80_df[["event_id", "nhits", "prediction", "source_file"]].head(20))
+print(real_e_80_df["event_id"].min(), real_e_80_df["event_id"].max())
+print(real_e_80_df["event_id"].is_monotonic_increasing)
+with h5py.File(REAL_H5_FILES["electron_80"], "r") as f:
+    print(len(f["offsets"]) - 1)
+
 print("\n===================================")
 print("ALL EVENT GALLERIES GENERATED")
 print("===================================")
 print(f"Output directory: {OUTDIR}")
+
