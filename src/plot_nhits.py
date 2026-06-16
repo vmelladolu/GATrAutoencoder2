@@ -326,22 +326,37 @@ for _, row in df_p_80.iterrows():
         nhits[evt]
     )
 
-def plot_distribution(original, classified, title, outfile, logy=False):
-    plt.figure(figsize=(10,7))
+def plot_distribution(original, classified, title, outfile, xlim=None):
+    plt.figure(figsize=(10, 7))
 
-    plt.hist(original, bins=100, density=False, histtype="step", linewidth=3, label="Original")
+    plt.hist(
+        original,
+        bins=100,
+        density=False,
+        histtype="step",
+        linewidth=3,
+        label="Original"
+    )
 
     for particle, values in classified.items():
         if len(values) == 0:
             continue
-        plt.hist(values, bins=100, density=False, histtype="step", linewidth=2, label=f"Predicted {particle}")
+        plt.hist(
+            values,
+            bins=100,
+            density=False,
+            histtype="step",
+            linewidth=2,
+            alpha=0.9,
+            label=f"Predicted {particle}"
+        )
 
     plt.xlabel("Nhits")
     plt.ylabel("Events")
     plt.title(title)
     plt.legend()
-    if logy:
-        plt.yscale("log")
+    if xlim is not None:
+        plt.xlim(*xlim)
     plt.tight_layout()
     plt.savefig(os.path.join(OUTDIR, outfile), dpi=300)
     plt.close()
@@ -350,9 +365,9 @@ for particle in ["electron", "pion"]:
     plot_distribution(
         original=real_original_80[particle],
         classified=real_classified_80[particle],
-        title=f"Real Testbeam NHits 80 GeV - {particle}",
-        outfile=f"real_nhits_{particle}_80.png",
-        logy=True
+        title=f"Real Testbeam NHits 80 GeV - {particle} (linear)",
+        outfile=f"real_nhits_{particle}_80_linear.png",
+        xlim=(0, 1700)
     )
 
 # ==========================================================
