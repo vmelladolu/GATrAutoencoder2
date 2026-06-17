@@ -126,6 +126,14 @@ def compute_longitudinal_per_event(offsets, k_hits, n_first_layers=14):
             nhits_first[ev] = 0
             continue
 
+        if ev < 5:
+            print("\n[LONGITUDINAL DEBUG]")
+            print("event:", ev)
+            print("ks min/max:", ks.min(), ks.max())
+            print("totalhits:", totalhits)
+            print("hits_first:", np.sum(ks < n_first_layers))
+            print("unique ks:", np.unique(ks)[:50])
+
         hits_first = np.sum(ks < n_first_layers)
         nhits_first[ev] = hits_first
         longitudinal[ev] = hits_first / totalhits
@@ -170,6 +178,19 @@ def compute_lateral_per_event(offsets, x_hits, y_hits, k_hits, layers_for_axis=1
             (ys >= y_mean - half_window) &
             (ys <= y_mean + half_window)
         )
+
+        if ev < 5:
+            print("\n[LATERAL DEBUG]")
+            print("event:", ev)
+            print("ks min/max:", ks.min(), ks.max())
+            print("totalhits:", totalhits)
+            print("axis_hits:", np.sum(mask_axis))
+            print("radius_hits:", np.sum(mask_radius))
+            print("x_mean:", x_mean)
+            print("y_mean:", y_mean)
+            print("x min/max:", xs.min(), xs.max())
+            print("y min/max:", ys.min(), ys.max())
+            print("unique ks:", np.unique(ks)[:50])
 
         nhitsinradius = np.sum(mask_radius)
         lateral_hits[ev] = nhitsinradius
@@ -282,16 +303,16 @@ def compute_noise_filter_mask(density, second_max_hits, min_density=2.5, min_sec
 
 real_files = [
     (
-        "piones_testbeam_20_test.csv",
-        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/piones_20_test.h5"
+        "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_20_test_testbeam2_hough/electrones_20_test2_features.csv",
+        "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_20_test_hough.h5"
     ),
     (
-        "piones_testbeam_50_test.csv",
-        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/piones_50_test.h5"
+        "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_50_test_testbeam2_hough/electrones_50_test2_features.csv",
+        "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_50_test_hough.h5"
     ),
     (
-        "piones_testbeam_80_test.csv",
-        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/piones_80_test.h5"
+        "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_80_test_testbeam2_hough/electrones_80_test2_features.csv",
+        "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_80_test_hough.h5"
     ),
 ]
 
@@ -583,7 +604,7 @@ df["prediction"] = [
     for p in preds
 ]
 
-out_file = "classified_testbeam1_piones-cortes.csv"
+out_file = "classified_electrones_hough.csv"
 
 df.to_csv(
     out_file,
