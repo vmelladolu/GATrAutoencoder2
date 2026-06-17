@@ -10,7 +10,7 @@ from collections import defaultdict
 # OUTPUT DIR
 # ==========================================================
 
-OUTDIR = "nhits_plots_events_softmax-cortes_batchutils"
+OUTDIR = "nhits_plots_events_softmax-cortes_hough"
 
 os.makedirs(
     OUTDIR,
@@ -45,25 +45,25 @@ REAL_H5_FILES = {
 
     "electron": [
 
-        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/electrones_20_test.h5",
-        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/electrones_50_test.h5",
-        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/electrones_80_test.h5",
+        "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_20_test_hough.h5",
+        "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_50_test_hough.h5",
+        "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_80_test_hough.h5",
     ],
 
     "pion": [
 
-        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/piones_20_test.h5",
-        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/piones_50_test.h5",
-        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/piones_80_test.h5",
+        "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/piones_20_test_hough.h5",
+        "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/piones_50_test_hough.h5",
+        "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/piones_80_test_hough.h5",
     ]
 }
 
 REAL_ELECTRON_CSV = (
-    "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/classified_electrones_batchutils.csv"
+    "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/classified_electrones_hough.csv"
 )
 
 REAL_PION_CSV = (
-    "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/classified_piones_batchutils.csv"
+    "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/classified_piones_hough.csv"
 )
 
 # ==========================================================
@@ -269,21 +269,21 @@ print_class_summary("PION TESTBEAM", df_p)
 
 #----------------------- PLOTS 80 GeV----------------------------------
 
-df_e_80 = df_e[df_e["source_file"] == "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_80_testbeam1/electrones_80_test1_features.csv"].copy()
-df_p_80 = df_p[df_p["source_file"] == "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/piones_80_testbeam1/piones_80_test1_features.csv"].copy()
+df_e_80 = df_e[df_e["source_file"] == "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_80_test_testbeam2_hough/electrones_80_test2_features.csv"].copy()
+df_p_80 = df_p[df_p["source_file"] == "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/piones_80_test_testbeam2_hough/piones_80_test2_features.csv"].copy()
 
 print_class_summary("ELECTRON 80 TESTBEAM", df_e_80)
 print_class_summary("PION 80 TESTBEAM", df_p_80)
 
 electron_nhits_80 = {
-    "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_80_testbeam1/electrones_80_test1_features.csv": load_nhits_from_h5(
-        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/electrones_80_test.h5"
+    "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_80_test_testbeam2_hough/electrones_80_test2_features.csv": load_nhits_from_h5(
+        "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_80_test_hough.h5"
     )
 }
 
 pion_nhits_80 = {
-    "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/piones_80_testbeam1/piones_80_test1_features.csv": load_nhits_from_h5(
-        "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/piones_80_test.h5"
+    "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/piones_80_test_testbeam2_hough/piones_80_test2_features.csv": load_nhits_from_h5(
+        "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/piones_80_test_hough.h5"
     )
 }
 # ==========================================================
@@ -293,8 +293,8 @@ pion_nhits_80 = {
 real_original_80 = {}
 real_classified_80 = defaultdict(lambda: defaultdict(list))
 
-real_original_80["electron"] = electron_nhits_80["/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_80_testbeam1/electrones_80_test1_features.csv"]
-real_original_80["pion"] = pion_nhits_80["/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/piones_80_testbeam1/piones_80_test1_features.csv"]
+real_original_80["electron"] = electron_nhits_80["/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_80_test_testbeam2_hough/electrones_80_test2_features.csv"]
+real_original_80["pion"] = pion_nhits_80["/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/piones_80_test_testbeam2_hough/piones_80_test2_features.csv"]
 
 for _, row in df_e_80.iterrows():
 
@@ -376,19 +376,19 @@ for particle in ["electron", "pion"]:
 
 electron_nhits = {
 
-    "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_20_testbeam1/electrones_20_test1_features.csv":
+    "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_20_test_testbeam2_hough/electrones_20_test2_features.csv":
         load_nhits_from_h5(
-            "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/electrones_20_test.h5"
+            "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_20_test_hough.h5"
         ),
 
-    "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_50_testbeam1/electrones_50_test1_features.csv":
+    "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_50_test_testbeam2_hough/electrones_50_test2_features.csv":
         load_nhits_from_h5(
-            "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/electrones_50_test.h5"
+            "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_50_test_hough.h5"
         ),
 
-    "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_80_testbeam1/electrones_80_test1_features.csv":
+    "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_80_test_testbeam2_hough/electrones_80_test2_features.csv":
         load_nhits_from_h5(
-            "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/electrones_80_test.h5"
+            "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_80_test_hough.h5"
         ),
 }
 
@@ -412,19 +412,19 @@ for _, row in df_e.iterrows():
 # ==========================================================
 pion_nhits = {
 
-    "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/piones_20_testbeam1/piones_20_test1_features.csv":
+    "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/piones_20_test_testbeam2_hough/piones_20_test2_features.csv":
         load_nhits_from_h5(
-            "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/piones_20_test.h5"
+            "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/piones_20_test_hough.h5"
         ),
 
-    "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/piones_50_testbeam1/piones_50_test1_features.csv":
+    "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/piones_50_test_testbeam2_hough/piones_50_test2_features.csv":
         load_nhits_from_h5(
-            "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/piones_50_test.h5"
+            "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/piones_50_test_hough.h5"
         ),
 
-    "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/piones_80_testbeam1/piones_80_test1_features.csv":
+    "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/piones_80_test_testbeam2_hough/piones_80_test2_features.csv":
         load_nhits_from_h5(
-            "/home/vmellado/FQM378/vmellado/GATrEnv/data/testbeam/piones_80_test.h5"
+            "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/piones_80_test_hough.h5"
         ),
 }
 
