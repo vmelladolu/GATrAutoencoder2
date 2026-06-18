@@ -303,16 +303,16 @@ def compute_noise_filter_mask(density, second_max_hits, min_density=2.5, min_sec
 
 real_files = [
     (
-        "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_20_test_testbeam2_hough/electrones_20_test2_features.csv",
-        "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_20_test_hough.h5"
+        "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/piones_20_test_testbeam2_hough/piones_20_test2_features.csv",
+        "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/piones_20_test_hough.h5"
     ),
     (
-        "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_50_test_testbeam2_hough/electrones_50_test2_features.csv",
-        "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_50_test_hough.h5"
+        "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/piones_50_test_testbeam2_hough/piones_50_test2_features.csv",
+        "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/piones_50_test_hough.h5"
     ),
     (
-        "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_80_test_testbeam2_hough/electrones_80_test2_features.csv",
-        "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/electrones_80_test_hough.h5"
+        "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/piones_80_test_testbeam2_hough/piones_80_test2_features.csv",
+        "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder/piones_80_test_hough.h5"
     ),
 ]
 
@@ -396,6 +396,11 @@ for csv_path, h5_path in real_files:
     nhits = nhits[:n]
     K_event= K_event[:n]
 
+    offsets = offsets[:n + 1]
+    x_hits = x_hits[:offsets[-1]]
+    y_hits = y_hits[:offsets[-1]]
+    k_hits = k_hits[:offsets[-1]]
+
     first_signal = first_signal[:n]
     last_signal = last_signal[:n]
     complete_event = complete_event[:n]
@@ -449,7 +454,7 @@ for csv_path, h5_path in real_files:
         k_hits=k_hits,
         density=tmp["density"].to_numpy(),
         min_density=5.0
-    )[:n]
+    )
 
     tmp["noise_like_mask"] = noise_like_mask
     tmp["penetration_muon_mask"] = penetration_muon_mask
@@ -604,7 +609,7 @@ df["prediction"] = [
     for p in preds
 ]
 
-out_file = "classified_electrones_hough.csv"
+out_file = "classified_piones_hough.csv"
 
 df.to_csv(
     out_file,

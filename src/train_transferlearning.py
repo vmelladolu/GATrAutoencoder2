@@ -203,7 +203,7 @@ optimizer = torch.optim.Adam(
     lr=1e-3
 )
 
-EPOCHS = 50
+EPOCHS = 100
 
 for epoch in range(EPOCHS):
 
