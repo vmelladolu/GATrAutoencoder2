@@ -226,8 +226,18 @@ def run_inference(model, loaders_with_labels, device, use_scalar, use_one_hot):
     for loader, label_int, label_name in loaders_with_labels:
         _log(f"  Inferencia {label_name} ({len(loader)} batches)...")
         t0 = time.time()
-        for batch in tqdm(loader):
+        for ibatch, batch in enumerate(tqdm(loader)):
             data = build_batch(batch, use_scalar=use_scalar, use_one_hot=use_one_hot)
+
+            mv_v_part = data["mv_v_part"]
+            mv_s_part = data["mv_s_part"]
+
+            if ibatch == 0:
+                print("DEBUG evaluate_autoencoder")
+                print("mv_v_part[:5] =", mv_v_part[:5])
+                print("mv_s_part[:5] =", mv_s_part[:5])
+                print("mv_v_part[:5, 2] =", mv_v_part[:5, 2])
+
             mv_v = data["mv_v_part"].to(device)
             mv_s = data["mv_s_part"].to(device)
             sc   = data["scalars"].to(device)
