@@ -1,0 +1,62 @@
+# Config para fine-tuning en 2 fases del sistema AE + cabeza sobre datos ruidosos.
+# Las secciones encoder/decoder/aggregation/latent DEBEN coincidir con el checkpoint
+# del autoencoder (checkpoints_vae_sim/, entrenado con model_cfg.yml).
+
+# ------- Parámetros de fine-tuning (2 fases) -------
+finetune:
+  # Fase 1: todas las capas activas, LR muy bajo
+  phase1_epochs: 5
+  lr_ae:         1.0e-5    # LR para todo el AE en fase 1
+  lr_head_p1:    1.0e-4    # LR para la cabeza en fase 1
+
+  # Fase 2: AE congelado, cabeza sola con LR más alto
+  phase2_epochs: 30
+  lr_head_p2:    1.0e-3    # LR para la cabeza en fase 2
+
+  # Comunes
+  lr_min:        1.0e-6    # eta_min para CosineAnnealingLR
+  weight_decay:  1.0e-4
+  batch_size:    128
+  val_ratio:     0.15
+  class_weight:  true      # pesa la CrossEntropy por frecuencia inversa
+  checkpoint_dir: "checkpoints_clf_finetune"
+  top_k: 2
+  log_every_n_batches: 10  # frecuencia de log por batch en W&B (0 = desactivado)
+
+# ------- Cabeza de clasificación (hereda del entrenamiento original) -------
+classifier:
+  n_classes:    3
+  latent_source: "aggregate"
+  hidden_dim:   128
+  num_layers:   1
+  dropout:      0.2
+
+# ------- Debe coincidir con el AE entrenado -------
+latent:
+  use_vae: true
+  event_embed_dim: 32
+  beta_kl: 0.001
+
+encoder:
+  hidden_mv_channels: 32
+  hidden_s_channels: 256
+  num_blocks: 4
+  in_s_channels: 3
+  in_mv_channels: 2
+  out_mv_channels: 1
+  dropout: 0.
+  out_s_channels: 64
+  mv_embedding_mode: "centroid"
+
+aggregation:
+  type: "attention"
+
+decoder:
+  hidden_mv_channels: 32
+  hidden_s_channels: 256
+  num_blocks: 4
+  in_s_channels: 128
+  in_mv_channels: 1
+  out_mv_channels: 1
+  dropout: 0.
+  out_s_channels: 3
