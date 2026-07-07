@@ -13,16 +13,16 @@ from sklearn.metrics import ConfusionMatrixDisplay
 # CONFIG
 # ============================================================
 
-ELECTRON_CSV = "resultados_electron_testbeam.csv"
-#MUON_CSV = "resultados_muon_test.csv"
-#PION_CSV = "resultados_pion_test.csv"
+ELECTRON_CSV = "resultados_electron_test.csv"
+MUON_CSV = "resultados_muon_test.csv"
+PION_CSV = "resultados_pion_test.csv"
 
 BASE = Path.home() / "/home/vmellado/FQM378/vmellado/GATrEnv/GATrAutoencoder"
 
 CLASSIFIER_PATH = BASE / "best_classifier.pkl"
 SCALER_PATH = BASE / "scaler.pkl"
 
-OUTPUT_DIR = "testbeam_electron_results"
+OUTPUT_DIR = "simulaciones_classified"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -35,15 +35,15 @@ print("Loading CSVs...")
 
 
 df_e = pd.read_csv(ELECTRON_CSV)
-#df_m = pd.read_csv(MUON_CSV)
-#df_p = pd.read_csv(PION_CSV)
+df_m = pd.read_csv(MUON_CSV)
+df_p = pd.read_csv(PION_CSV)
 
 
-df = df_e #pd.concat([
-    #df_e,
-    #df_m,
-    #df_p
-#], ignore_index=True)
+df = pd.concat([
+    df_e,
+    df_m,
+    df_p
+], ignore_index=True)
 
 print("Total events:", len(df))
 
@@ -80,6 +80,7 @@ print("Predicting...")
 
 y_pred = clf.predict(X_scaled)
 
+df["prediction"] = y_pred
 
 # ============================================================
 # 1. LATENT SPACE BY TRUE LABELS
@@ -359,6 +360,23 @@ outlier_table.to_csv(
     os.path.join(OUTPUT_DIR, "outliers.csv"),
     index=False
 )
+
+# ============================================================
+# 10. SAVE CLASSIFIED CSV
+# ============================================================
+output_csv = os.path.join(
+OUTPUT_DIR,
+"classified_events.csv"
+)
+
+df.to_csv(
+output_csv,
+index=False
+)
+
+print("\nSaved classified CSV:")
+print(output_csv)
+
 
 # ============================================================
 # 11. FINAL SUMMARY
