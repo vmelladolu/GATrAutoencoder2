@@ -1,0 +1,16 @@
+=== Resumen de evaluación ===
+
+Checkpoint : checkpoint_best_epoch0402_loss0.078888.pt
+Config     : config/model_cfg.yml
+
+N eventos  : 5000
+  electron  : 5000 eventos
+
+Métricas de reconstrucción (MSE):
+  mse_x: 0.047343
+  mse_y: 0.046730
+  mse_z: 0.040560
+  mse_k: 0.040043
+  mse_thr: 0.004006
+
+Per-event MSE (XYZ): mean=0.130324, median=0.120570, p95=0.203905

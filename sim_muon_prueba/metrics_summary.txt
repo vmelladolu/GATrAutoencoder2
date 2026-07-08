@@ -1,0 +1,16 @@
+=== Resumen de evaluación ===
+
+Checkpoint : checkpoint_best_epoch0402_loss0.078888.pt
+Config     : config/model_cfg.yml
+
+N eventos  : 4902
+  muon      : 4902 eventos
+
+Métricas de reconstrucción (MSE):
+  mse_x: 0.041781
+  mse_y: 0.043558
+  mse_z: 0.037835
+  mse_k: 0.029267
+  mse_thr: 0.003430
+
+Per-event MSE (XYZ): mean=0.121659, median=0.085389, p95=0.341323
