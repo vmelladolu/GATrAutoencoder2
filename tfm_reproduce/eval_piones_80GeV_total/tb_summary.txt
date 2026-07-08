@@ -1,0 +1,11 @@
+=================================================================
+RESUMEN INFERENCIA TEST-BEAM
+=================================================================
+Eventos seleccionados : 166,947
+Filtro energia        : E = 70, 80, 90 GeV
+Filtro min_hits       : 20
+
+[Latente: aggregate]
+  electron  :   7,312  (  4.4%)
+  pion      :  98,656  ( 59.1%)
+  muon      :  60,979  ( 36.5%)
