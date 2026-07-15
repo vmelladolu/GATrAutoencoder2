@@ -15,7 +15,6 @@ COLUMN_ALIASES = {
     "nHits_3": ["nHits_3", "nhits_3", "nHits3"],
 }
 
-# Límites como en la imagen de referencia
 XMIN = {
     "nHits_total": 0,
     "nHits_1": 0,
@@ -37,7 +36,6 @@ YMAX = {
     "nHits_3": 0.42,
 }
 
-# Menos bins para que quede más suave, como en WhatsApp
 NBINS = {
     "nHits_total": 42,
     "nHits_1": 42,
@@ -87,17 +85,18 @@ def setup_style():
         "grid.color": "#b0b0b0",
         "grid.linewidth": 0.8,
         "grid.alpha": 0.28,
-        "font.size": 11,
-        "axes.titlesize": 15,
-        "axes.labelsize": 13,
-        "legend.fontsize": 10,
-        "xtick.labelsize": 11,
-        "ytick.labelsize": 11,
+        "font.size": 13,
+        "axes.titlesize": 17,
+        "axes.labelsize": 15,
+        "legend.fontsize": 12,
+        "xtick.labelsize": 13,
+        "ytick.labelsize": 13,
+        "figure.titlesize": 19,
     })
 
 
 def style_axis(ax, key):
-    ax.set_title(key, pad=10)
+    ax.set_title(key, pad=12)
     ax.set_xlabel(key)
     ax.set_ylabel("Density")
     ax.set_xlim(XMIN[key], XMAX[key])
@@ -109,7 +108,7 @@ def style_axis(ax, key):
         axis="both",
         which="major",
         direction="out",
-        length=4,
+        length=4.5,
         width=1,
         colors="0.15",
     )
@@ -122,12 +121,12 @@ def style_axis(ax, key):
 
 def add_statboxes(ax, tb_vals, sim_vals):
     ax.text(
-        0.745, 0.73,
+        0.72, 0.72,
         stats_text(tb_vals, "TB data"),
         transform=ax.transAxes,
         ha="left",
         va="top",
-        fontsize=8.5,
+        fontsize=9.5,
         bbox=dict(
             boxstyle="round",
             facecolor="white",
@@ -138,12 +137,12 @@ def add_statboxes(ax, tb_vals, sim_vals):
     )
 
     ax.text(
-        0.745, 0.50,
+        0.72, 0.47,
         stats_text(sim_vals, "Simulation"),
         transform=ax.transAxes,
         ha="left",
         va="top",
-        fontsize=8.5,
+        fontsize=9.5,
         bbox=dict(
             boxstyle="round",
             facecolor="#d8e8f5",
@@ -208,7 +207,7 @@ def plot_panel(ax, tb_df, sim_df, key):
         framealpha=0.95,
         facecolor="white",
         edgecolor="0.8",
-        borderpad=0.35,
+        borderpad=0.40,
         handlelength=1.8,
         labelspacing=0.35,
     )
@@ -234,32 +233,25 @@ def build_summary(tb_df, sim_df):
     return pd.DataFrame(rows)
 
 
-def plot_comparison(tb_df, sim_df, output_png, title=None, header_text=None):
+def plot_comparison(tb_df, sim_df, output_png, title=None):
     setup_style()
 
-    fig, axes = plt.subplots(2, 2, figsize=(12.6, 8.1))
+    fig, axes = plt.subplots(2, 2, figsize=(13.0, 8.6))
     axes = axes.ravel()
 
     for ax, key in zip(axes, PLOT_KEYS):
         plot_panel(ax, tb_df, sim_df, key)
 
     if title:
-        fig.suptitle(title, fontsize=18, y=0.985)
-
-    if header_text:
-        fig.text(
-            0.5, 0.952, header_text,
-            ha="center", va="bottom",
-            fontsize=11
-        )
+        fig.suptitle(title, fontsize=19, y=0.97)
 
     plt.subplots_adjust(
-        left=0.07,
+        left=0.08,
         right=0.985,
-        bottom=0.08,
-        top=0.91,
-        wspace=0.145,
-        hspace=0.27,
+        bottom=0.09,
+        top=0.90,
+        wspace=0.24,
+        hspace=0.38,
     )
 
     fig.savefig(output_png, dpi=180, bbox_inches="tight")
@@ -274,10 +266,6 @@ def main():
     ap.add_argument("--sim-csv", required=True)
     ap.add_argument("--output-dir", default="plots_muon_nhits")
     ap.add_argument("--title", default=None)
-    ap.add_argument(
-        "--header-text",
-        default="Best parameters: thr=[0.165, 7.795, 19.795] pC  eff=0.940  pm=6.841  pw=0.500",
-    )
     args = ap.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -294,7 +282,6 @@ def main():
         sim_df,
         output_dir / "nhits_comparison.png",
         title=args.title,
-        header_text=args.header_text,
     )
 
 
