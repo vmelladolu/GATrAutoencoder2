@@ -4,7 +4,7 @@ Checkpoint : checkpoint_best_epoch0402_loss0.078888.pt
 Config     : config/model_cfg.yml
 
 N eventos  : 121626
-  pion      : 121626 eventos
+  electron  : 121626 eventos
 
 Métricas de reconstrucción (MSE):
   mse_x: 0.278094
@@ -13,4 +13,4 @@ Métricas de reconstrucción (MSE):
   mse_k: 0.166044
   mse_thr: 0.025270
 
-Per-event MSE (XYZ): mean=1.192501, median=0.631458, p95=4.277632
+Per-event MSE (XYZ): mean=1.192501, median=0.631457, p95=4.277635
