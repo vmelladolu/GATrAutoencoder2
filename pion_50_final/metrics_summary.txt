@@ -13,4 +13,4 @@ Métricas de reconstrucción (MSE):
   mse_k: 0.181677
   mse_thr: 0.033479
 
-Per-event MSE (XYZ): mean=1.501561, median=0.676532, p95=6.400015
+Per-event MSE (XYZ): mean=1.501560, median=0.676532, p95=6.400015
